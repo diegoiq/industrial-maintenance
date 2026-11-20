@@ -78,8 +78,16 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
   };
 
   return (
-    <aside className="w-96 bg-slate-900 border-l border-slate-800 p-5 flex flex-col justify-between overflow-y-auto shadow-2xl h-full">
-      <div className="space-y-6">
+    <aside className="
+      fixed md:absolute bottom-0 right-0 z-30
+      w-full md:w-80 lg:w-96
+      max-h-[75vh] md:max-h-[92%]
+      bg-slate-900/95 backdrop-blur-md border border-slate-700/80
+      rounded-t-2xl md:rounded-2xl
+      p-4 md:p-5 flex flex-col justify-between overflow-y-auto shadow-2xl
+      md:m-3
+    ">
+      <div className="space-y-4 md:space-y-5">
         {/* Cabecera */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <div>

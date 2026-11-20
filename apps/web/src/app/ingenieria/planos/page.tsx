@@ -1,28 +1,20 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Building2, 
   Map as MapIcon, 
   Upload, 
-  Plus, 
-  Filter, 
-  QrCode, 
   Layers, 
   CheckCircle2, 
-  AlertCircle,
-  FileCode2,
-  HardHat,
-  Crosshair,
-  MousePointer,
-  Trash2,
-  DownloadCloud,
-  FileDown,
-  FileSpreadsheet,
-  Globe,
-  RefreshCw,
+  Trash2, 
+  FileDown, 
+  FileSpreadsheet, 
+  Globe, 
+  RefreshCw, 
   CloudUpload,
-  Cloud
+  MoreVertical,
+  Plus
 } from 'lucide-react';
 import { InteractivePlantMap } from '../../../components/ingenieria/InteractivePlantMap';
 import { ZoneDrawer } from '../../../components/ingenieria/ZoneDrawer';
@@ -49,21 +41,34 @@ export default function PlanosIngenieriaPage() {
   const [selectedZona, setSelectedZona] = useState<ZonaInspeccion | undefined>(undefined);
   const [selectedElemento, setSelectedElemento] = useState<Elemento | undefined>(undefined);
 
-  // Modos del Editor de Planta: inspect (navegar y drawer), add_pin (colocar pin con clic), add_zone
+  // Modos de interacción: 'inspect' | 'add_pin' | 'add_zone'
   const [activeMode, setActiveMode] = useState<'inspect' | 'add_pin' | 'add_zone'>('inspect');
+  const [customPolygonPoints, setCustomPolygonPoints] = useState<{ x: number; y: number }[] | undefined>(undefined);
+  const [isEditingZonePolygon, setIsEditingZonePolygon] = useState<boolean>(false);
+
+  // Menú desplegable "Más opciones" en topbar
+  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Modales
-  const [isUploadPlanModalOpen, setIsUploadPlanModalOpen] = useState(false);
-  const [isReplacePlanModalOpen, setIsReplacePlanModalOpen] = useState(false);
-  const [isCreateElementModalOpen, setIsCreateElementModalOpen] = useState(false);
-  const [isCreateZoneModalOpen, setIsCreateZoneModalOpen] = useState(false);
-  const [isQRModalOpen, setIsQRModalOpen] = useState(false);
-  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
-  const [isHitosModalOpen, setIsHitosModalOpen] = useState(false);
-  const [targetElementForQR, setTargetElementForQR] = useState<Elemento | null>(null);
-  const [clickCoordinates, setClickCoordinates] = useState<{ x: number; y: number } | null>(null);
-  const [customPolygonPoints, setCustomPolygonPoints] = useState<{ x: number; y: number }[] | null>(null);
-  const [isEditingZonePolygon, setIsEditingZonePolygon] = useState<boolean>(false);
+  const [isUploadPlanModalOpen, setIsUploadPlanModalOpen] = useState<boolean>(false);
+  const [isReplacePlanModalOpen, setIsReplacePlanModalOpen] = useState<boolean>(false);
+  const [isCreateElementModalOpen, setIsCreateElementModalOpen] = useState<boolean>(false);
+  const [pendingPinCoords, setPendingPinCoords] = useState<{ x: number; y: number } | null>(null);
+  const [isQRModalOpen, setIsQRModalOpen] = useState<boolean>(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
+  const [isHitosModalOpen, setIsHitosModalOpen] = useState<boolean>(false);
+  const [isCreateZoneModalOpen, setIsCreateZoneModalOpen] = useState<boolean>(false);
   const [isEditZoneModalOpen, setIsEditZoneModalOpen] = useState<boolean>(false);
   const [zoneToEdit, setZoneToEdit] = useState<ZonaInspeccion | undefined>(undefined);
 
@@ -126,7 +131,6 @@ export default function PlanosIngenieriaPage() {
   const currentPlano = planos.find(p => p.id === selectedPlanoId);
   const zonasPlano = zonas.filter(z => currentPlano ? z.plano_id === currentPlano.id : true);
   const elementosPlano = elementos.filter(e => {
-    // Si la zona pertenece al plano o no hay zona asignada
     const zona = zonas.find(z => z.id === e.zona_id);
     return currentPlano ? (!zona || zona.plano_id === currentPlano.id) : true;
   });
@@ -138,169 +142,112 @@ export default function PlanosIngenieriaPage() {
 
   const elementosFiltrados = elementosPlano.filter(e => {
     if (filtroSemaforo !== 'todos' && e.estado_actual !== filtroSemaforo) return false;
-    if (filtroNivel !== 'todos') {
-      const zona = zonas.find(z => z.id === e.zona_id);
-      const cota = e.cota_nivel || zona?.cota_nivel || 146000;
-      return String(cota) === filtroNivel;
-    }
     return true;
   });
 
-  // Manejo de clic en el mapa según el modo
-  const handleMapClick = (coords: { x: number; y: number }) => {
-    setClickCoordinates(coords);
-    if (activeMode === 'add_pin') {
-      setIsCreateElementModalOpen(true);
-    } else if (activeMode === 'add_zone') {
-      setIsCreateZoneModalOpen(true);
-    }
-  };
-
   const handleSelectZona = (zona: ZonaInspeccion) => {
     setSelectedZona(zona);
-    setIsEditingZonePolygon(false); // Inicia bloqueado para que no se muevan los vértices accidentalmente
-    const primerElementoDeZona = elementos.find(e => e.zona_id === zona.id);
-    if (primerElementoDeZona) {
-      setSelectedElemento(primerElementoDeZona);
-    }
+    setSelectedElemento(undefined);
+    setIsEditingZonePolygon(false);
   };
 
   const handleSelectElemento = (elem: Elemento) => {
     setSelectedElemento(elem);
-    const zonaElem = zonas.find(z => z.id === elem.zona_id);
-    if (zonaElem) {
-      setSelectedZona(zonaElem);
+    const z = zonas.find(zona => zona.id === elem.zona_id);
+    setSelectedZona(z);
+  };
+
+  const handleMapClick = (coords: { x: number; y: number }) => {
+    if (activeMode === 'add_pin') {
+      setPendingPinCoords(coords);
+      setIsCreateElementModalOpen(true);
+      setActiveMode('inspect');
     }
   };
 
   const handleOpenQRModal = (elem: Elemento) => {
-    setTargetElementForQR(elem);
+    setSelectedElemento(elem);
     setIsQRModalOpen(true);
   };
 
-  // Callback al crear un plano
-  const handlePlanCreated = async (newPlano: Plano, newArea?: Area) => {
-    await reloadFromDB();
-    if (newArea) {
-      setSelectedAreaId(newArea.id);
-    }
-    setSelectedPlanoId(newPlano.id);
-    setNotification(`¡Plano "${newPlano.titulo}" cargado exitosamente! Ahora puedes colocar pines y delimitar zonas.`);
-    setTimeout(() => setNotification(null), 5000);
-  };
-
-  // Callback al reemplazar el archivo/fondo de un plano existente conservando zonas
-  const handlePlanReplaced = async (updatedPlano: Plano) => {
-    await reloadFromDB();
-    setSelectedPlanoId(updatedPlano.id);
-    setNotification(`Archivo del plano "${updatedPlano.titulo}" actualizado exitosamente. Todas tus zonas y pines se conservan intactos.`);
-    setTimeout(() => setNotification(null), 5000);
-  };
-
-  // Callback al crear un elemento
-  const handleElementCreated = async (newElem: Elemento) => {
-    await reloadFromDB();
-    setSelectedElemento(newElem);
-    setActiveMode('inspect');
-    setNotification(`Activo "${newElem.tag_codigo}" colocado en el plano con código QR generado.`);
-    setTimeout(() => setNotification(null), 4000);
-  };
-
-  // Callback al crear una zona
-  const handleZoneCreated = async (newZone: ZonaInspeccion) => {
-    await reloadFromDB();
-    setSelectedZona(newZone);
-    setActiveMode('inspect');
-    setCustomPolygonPoints(null);
-    setNotification(`Zona "${newZone.codigo} - ${newZone.nombre}" trazada en el plano. Ahora puedes ajustar sus vértices arrastrándolos.`);
-    setTimeout(() => setNotification(null), 4000);
-  };
-
-  // Callback para actualizar los vértices arrastrados en el plano
-  const handleUpdateZonePolygon = async (zonaId: string, nuevosPuntos: { x: number; y: number }[]) => {
-    await db.zonas.update(zonaId, {
-      poligono_svg: { puntos: nuevosPuntos }
-    });
-    setZonas(prev => prev.map(z => z.id === zonaId ? { ...z, poligono_svg: { puntos: nuevosPuntos } } : z));
-    if (selectedZona?.id === zonaId) {
-      setSelectedZona(prev => prev ? { ...prev, poligono_svg: { puntos: nuevosPuntos } } : prev);
-    }
-  };
-
-  // Añadir un vértice adicional a una zona seleccionada desde el Drawer
-  const handleAddVertexToZone = async (zonaId: string) => {
-    const targetZona = zonas.find(z => z.id === zonaId);
-    if (!targetZona?.poligono_svg?.puntos || targetZona.poligono_svg.puntos.length < 3) return;
-    const pts = targetZona.poligono_svg.puntos;
-    const p1 = pts[pts.length - 1];
-    const p2 = pts[0];
-    const newPt = {
-      x: Math.round((p1.x + p2.x) / 2),
-      y: Math.round((p1.y + p2.y) / 2)
+  const handleUpdateZonePolygon = async (zonaId: string, puntos: { x: number; y: number }[]) => {
+    const target = zonas.find(z => z.id === zonaId);
+    if (!target) return;
+    const updated = {
+      ...target,
+      poligono_svg: { puntos }
     };
-    const nuevosPuntos = [...pts, newPt];
-    await handleUpdateZonePolygon(zonaId, nuevosPuntos);
-    setNotification(`Vértice P${nuevosPuntos.length} añadido a la zona "${targetZona.nombre}". Arrástralo en el plano para darle forma.`);
-    setTimeout(() => setNotification(null), 3000);
-  };
-
-  // Eliminar una zona de inspección
-  const handleDeleteZone = async (zonaId: string) => {
-    await db.zonas.delete(zonaId);
+    await db.zonas.put(updated);
+    setZonas(prev => prev.map(z => z.id === zonaId ? updated : z));
     if (selectedZona?.id === zonaId) {
-      setSelectedZona(undefined);
+      setSelectedZona(updated);
     }
-    await reloadFromDB();
-    setNotification("Zona de inspección eliminada correctamente.");
+    setNotification(`Contorno de zona "${target.codigo}" actualizado.`);
     setTimeout(() => setNotification(null), 3000);
   };
 
-  // Callback cuando se finaliza el trazado libre o rectángulo inicial
+  const handleAddVertexToZone = async (zonaId: string) => {
+    const target = zonas.find(z => z.id === zonaId);
+    if (!target) return;
+    const pts = target.poligono_svg?.puntos || [];
+    if (pts.length < 2) return;
+    const last = pts[pts.length - 1];
+    const first = pts[0];
+    const newPt = {
+      x: Math.round((last.x + first.x) / 2),
+      y: Math.round((last.y + first.y) / 2)
+    };
+    const updatedPts = [...pts, newPt];
+    await handleUpdateZonePolygon(zonaId, updatedPts);
+  };
+
+  const handleDeleteZone = async (zonaId: string) => {
+    const target = zonas.find(z => z.id === zonaId);
+    if (!target) return;
+    if (window.confirm(`¿Seguro que deseas eliminar la Zona "${target.codigo} - ${target.nombre}"?`)) {
+      await db.zonas.delete(zonaId);
+      await db.elementos.where('zona_id').equals(zonaId).delete();
+      await reloadFromDB();
+      setSelectedZona(undefined);
+      setSelectedElemento(undefined);
+      setNotification(`Zona "${target.codigo}" eliminada.`);
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
   const handlePolygonCreated = (puntos: { x: number; y: number }[]) => {
     setCustomPolygonPoints(puntos);
     setIsCreateZoneModalOpen(true);
     setActiveMode('inspect');
   };
 
-  // Callback cuando se editan los datos y cálculo de andamios de una zona
   const handleZoneUpdated = async (updatedZone: ZonaInspeccion) => {
     await db.zonas.put(updatedZone);
     setZonas(prev => prev.map(z => z.id === updatedZone.id ? updatedZone : z));
     if (selectedZona?.id === updatedZone.id) {
       setSelectedZona(updatedZone);
     }
-    setNotification(`Zona "${updatedZone.codigo}" y cálculo de andamio actualizados exitosamente.`);
-    setTimeout(() => setNotification(null), 4000);
+    setNotification(`Zona "${updatedZone.codigo}" actualizada.`);
+    setTimeout(() => setNotification(null), 3000);
   };
 
-  // Eliminar únicamente el plano actual con advertencia clara
   const handleDeleteCurrentPlano = async () => {
     if (!currentPlano) return;
-    const zonasDelPlano = zonas.filter(z => z.plano_id === currentPlano.id);
-    const pinesDelPlano = elementos.filter(e => {
-      const z = zonas.find(zona => zona.id === e.zona_id);
-      return z ? z.plano_id === currentPlano.id : true;
-    });
-
-    const confirmMsg = `¿Deseas eliminar ÚNICAMENTE el plano:\n"${currentPlano.titulo}"?\n\n` +
-      `• Zonas en este plano: ${zonasDelPlano.length}\n` +
-      `• Activos mapeados: ${pinesDelPlano.length}\n\n` +
-      `NOTA DE SEGURIDAD: Todos los demás planos y áreas de la planta permanecerán intactos sin borrarse.`;
-
+    const confirmMsg = `¿Eliminar ÚNICAMENTE el plano "${currentPlano.titulo}"?\n\nLos demás planos y áreas se conservarán.`;
     if (window.confirm(confirmMsg)) {
       await db.planos.delete(currentPlano.id);
+      const zonasDelPlano = zonas.filter(z => z.plano_id === currentPlano.id);
       for (const z of zonasDelPlano) {
         await db.zonas.delete(z.id);
         await db.elementos.where('zona_id').equals(z.id).delete();
       }
       await reloadFromDB();
       setSelectedPlanoId('');
-      setNotification(`Plano "${currentPlano.titulo}" eliminado con éxito.`);
+      setNotification(`Plano "${currentPlano.titulo}" eliminado.`);
       setTimeout(() => setNotification(null), 4000);
     }
   };
 
-  // Limpiar y resetear todos los datos de planta a cero (Hard Reset)
   const handleWipeData = async () => {
     if (window.confirm("¿Seguro que deseas vaciar todos los planos, áreas y activos locales para empezar desde cero?")) {
       await db.areas.clear();
@@ -312,12 +259,11 @@ export default function PlanosIngenieriaPage() {
       setSelectedPlanoId('');
       setSelectedZona(undefined);
       setSelectedElemento(undefined);
-      setNotification("Se limpiaron todos los datos. La planta está lista para cargar planos nuevos desde cero.");
-      setTimeout(() => setNotification(null), 4000);
+      setNotification("Se limpiaron todos los datos.");
+      setTimeout(() => setNotification(null), 3000);
     }
   };
 
-  // Exportar configuración completa a JSON para backup o compartir
   const handleExportPlantJSON = async () => {
     const backupData = {
       version: 1,
@@ -336,7 +282,7 @@ export default function PlanosIngenieriaPage() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setNotification("Respaldo de planta exportado en formato JSON.");
+    setNotification("Respaldo exportado en formato JSON.");
     setTimeout(() => setNotification(null), 3000);
   };
 
@@ -366,7 +312,7 @@ export default function PlanosIngenieriaPage() {
 
       const data = await res.json();
       if (data.success) {
-        setNotification(`¡Sincronizado con Neon y Backblaze B2! (${data.synced?.planos || 0} planos, ${data.synced?.zonas || 0} zonas, ${data.synced?.elementos || 0} activos respaldados en la nube).`);
+        setNotification(`¡Sincronizado con Neon y Backblaze B2! (${data.synced?.planos || 0} planos, ${data.synced?.zonas || 0} zonas, ${data.synced?.elementos || 0} activos respaldados).`);
       } else {
         alert("Error en sincronización: " + (data.error || "Desconocido"));
       }
@@ -374,19 +320,27 @@ export default function PlanosIngenieriaPage() {
       alert("Error de conexión al sincronizar con la nube: " + err?.message);
     } finally {
       setIsSyncingCloud(false);
-      setTimeout(() => setNotification(null), 5000);
+      setTimeout(() => setNotification(null), 4000);
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col h-screen overflow-hidden">
-      {/* Barra Superior de Control de Planta y Modos */}
-      <header className="px-6 py-3 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Selector de Área */}
-          <div className="flex items-center space-x-2">
-            <Building2 className="w-4 h-4 text-amber-500" />
-            <span className="text-xs font-bold text-slate-400 uppercase">Área / Nave:</span>
+    <div className="flex-1 flex flex-col h-full w-full overflow-hidden bg-[#070b13] relative">
+      {/* Toast Flotante de Notificaciones (No empuja el lienzo) */}
+      {notification && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 bg-emerald-950/95 border border-emerald-500/80 px-4 py-2 rounded-xl text-emerald-200 text-xs flex items-center space-x-2 shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+          <span className="font-medium">{notification}</span>
+        </div>
+      )}
+
+      {/* TOPBAR UNIFICADA (48px / 1 fila compacta) */}
+      <header className="h-12 bg-slate-900 border-b border-slate-800 px-3 pl-12 lg:pl-3 flex items-center justify-between gap-2 flex-shrink-0 z-20">
+        {/* Lado Izquierdo: Selectores de Área y Plano */}
+        <div className="flex items-center space-x-2 min-w-0">
+          {/* Selector de Área (Visible en Desktop) */}
+          <div className="hidden md:flex items-center space-x-1.5 flex-shrink-0">
+            <Building2 className="w-3.5 h-3.5 text-amber-500" />
             {areas.length > 0 ? (
               <select
                 value={selectedAreaId}
@@ -395,7 +349,7 @@ export default function PlanosIngenieriaPage() {
                   const planosDeArea = planos.filter(p => p.area_id === e.target.value);
                   if (planosDeArea.length > 0) setSelectedPlanoId(planosDeArea[0].id);
                 }}
-                className="bg-slate-950 border border-slate-700 text-xs font-bold text-white rounded-lg px-2.5 py-1.5 focus:border-amber-400 focus:outline-none"
+                className="bg-slate-950 border border-slate-700 text-[11px] font-bold text-slate-200 rounded-md px-2 py-1 focus:border-amber-400 focus:outline-none max-w-[130px] truncate"
               >
                 {areas.map(a => (
                   <option key={a.id} value={a.id}>
@@ -403,259 +357,169 @@ export default function PlanosIngenieriaPage() {
                   </option>
                 ))}
               </select>
-            ) : (
-              <span className="text-xs text-slate-500 italic">Sin áreas aún</span>
-            )}
+            ) : null}
           </div>
 
           {/* Selector de Plano */}
-          <div className="flex items-center space-x-2">
-            <MapIcon className="w-4 h-4 text-sky-400" />
-            <span className="text-xs font-bold text-slate-400 uppercase">Plano:</span>
+          <div className="flex items-center space-x-1.5 min-w-0">
+            <MapIcon className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
             {planos.length > 0 ? (
-              <div className="flex items-center space-x-1.5">
-                <select
-                  value={selectedPlanoId}
-                  onChange={(e) => {
-                    const target = planos.find(p => p.id === e.target.value);
-                    if (target) {
-                      setSelectedPlanoId(target.id);
-                      setSelectedAreaId(target.area_id);
-                    }
-                  }}
-                  className="bg-slate-950 border border-slate-700 text-xs text-slate-200 rounded-lg px-2.5 py-1.5 focus:border-sky-400 focus:outline-none max-w-xs truncate font-medium"
-                >
-                  {planos.map(p => {
-                    const areaDelPlano = areas.find(a => a.id === p.area_id);
-                    const zonasCount = zonas.filter(z => z.plano_id === p.id).length;
-                    const pinesCount = elementos.filter(e => {
-                      const z = zonas.find(zona => zona.id === e.zona_id);
-                      return z ? z.plano_id === p.id : true;
-                    }).length;
-                    const iconEmoji = p.tipo_plano === 'layout_general' ? '🗺️' : p.tipo_plano === 'elevacion_isometrico' ? '📐' : '🏢';
-                    return (
-                      <option key={p.id} value={p.id}>
-                        {iconEmoji} {p.titulo} ({pinesCount} activos, {zonasCount} zonas) {areaDelPlano ? `· [${areaDelPlano.nombre}]` : ''}
-                      </option>
-                    );
-                  })}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => setIsReplacePlanModalOpen(true)}
-                  disabled={!currentPlano}
-                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-sky-400 hover:text-sky-300 rounded-lg border border-sky-500/40 text-xs font-bold transition shadow disabled:opacity-30"
-                  title="Reemplazar el archivo o fondo de este plano por un nuevo .DXF o PDF Ultra HD (tus zonas y pines se conservan intactos)"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Reemplazar Archivo (DXF)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDeleteCurrentPlano}
-                  disabled={!currentPlano}
-                  className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/40 rounded border border-slate-800 transition disabled:opacity-30"
-                  title="Eliminar únicamente este plano (los demás planos y áreas se conservan intactos)"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
+              <select
+                value={selectedPlanoId}
+                onChange={(e) => {
+                  const target = planos.find(p => p.id === e.target.value);
+                  if (target) {
+                    setSelectedPlanoId(target.id);
+                    setSelectedAreaId(target.area_id);
+                  }
+                }}
+                className="bg-slate-950 border border-slate-700 text-xs text-white rounded-md px-2 py-1 focus:border-sky-400 focus:outline-none max-w-[160px] sm:max-w-xs truncate font-semibold"
+              >
+                {planos.map(p => {
+                  const zonasCount = zonas.filter(z => z.plano_id === p.id).length;
+                  const iconEmoji = p.tipo_plano === 'layout_general' ? '🗺️' : p.tipo_plano === 'elevacion_isometrico' ? '📐' : '🏢';
+                  return (
+                    <option key={p.id} value={p.id}>
+                      {iconEmoji} {p.titulo} ({zonasCount} zonas)
+                    </option>
+                  );
+                })}
+              </select>
             ) : (
-              <span className="text-xs text-slate-500 italic">Sin planos cargados</span>
+              <span className="text-xs text-slate-500 italic">Sin planos</span>
             )}
           </div>
 
-          {/* Botón Principal para Subir Plano */}
-          <button
-            type="button"
-            onClick={() => setIsUploadPlanModalOpen(true)}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-lg shadow transition"
+          {/* Filtro de Cota/Nivel Compacto */}
+          <select
+            value={filtroNivel}
+            onChange={(e) => setFiltroNivel(e.target.value)}
+            className="hidden sm:inline-block bg-slate-950 border border-slate-700 text-amber-400 font-mono text-[11px] rounded-md px-2 py-1 focus:outline-none"
+            title="Filtrar Zonas por Cota / Nivel"
           >
-            <Upload className="w-3.5 h-3.5" />
-            <span>Subir Plano / Nueva Área</span>
-          </button>
+            <option value="todos">Niveles: Todos</option>
+            <option value="146000">+146.000 m (Suelo)</option>
+            <option value="152000">+152.000 m (+6m)</option>
+            <option value="158000">+158.000 m (+12m)</option>
+            <option value="170000">+170.000 m (+24m)</option>
+          </select>
         </div>
 
-        {/* Selector de Modo de Interacción en el Plano */}
-        <div className="flex items-center space-x-2 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
-          <button
-            type="button"
-            onClick={() => setActiveMode('inspect')}
-            className={`flex items-center space-x-1 px-2.5 py-1 rounded font-semibold transition ${
-              activeMode === 'inspect' ? 'bg-slate-800 text-white border border-slate-700' : 'text-slate-400 hover:text-white'
-            }`}
-            title="Modo Consulta: Navega y haz clic en pines para ver su ficha técnica"
-          >
-            <MousePointer className="w-3.5 h-3.5" />
-            <span>Inspeccionar</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveMode('add_pin')}
-            disabled={!currentPlano}
-            className={`flex items-center space-x-1 px-2.5 py-1 rounded font-semibold transition disabled:opacity-40 ${
-              activeMode === 'add_pin' ? 'bg-amber-500 text-black font-bold' : 'text-amber-400 hover:bg-slate-900'
-            }`}
-            title="Haz clic sobre el plano para colocar un nuevo Pin de Activo"
-          >
-            <Crosshair className="w-3.5 h-3.5" />
-            <span>+ Colocar Pin Activo</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveMode('add_zone')}
-            disabled={!currentPlano}
-            className={`flex items-center space-x-1 px-2.5 py-1 rounded font-semibold transition disabled:opacity-40 ${
-              activeMode === 'add_zone' ? 'bg-sky-500 text-black font-bold' : 'text-sky-400 hover:bg-slate-900'
-            }`}
-            title="Haz clic sobre el plano para crear una Zona de Inspección"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>+ Crear Zona</span>
-          </button>
-        </div>
-
-        {/* Acciones de gestión, Hitos Maps, Reporte y Backup */}
-        <div className="flex items-center space-x-2 text-xs">
-          <button
-            type="button"
-            onClick={() => setIsHitosModalOpen(true)}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-lg shadow transition"
-            title="Gestionar hitos geográficos y puntos de referencia desde Google Maps"
-          >
-            <Globe className="w-3.5 h-3.5" />
-            <span>Hitos Maps (GPS)</span>
-          </button>
-
+        {/* Lado Derecho: Sync Nube, Subir Plano y Menú de Gestión */}
+        <div className="flex items-center space-x-1.5 flex-shrink-0">
+          {/* Botón Sincronizar Nube */}
           <button
             type="button"
             onClick={handleSyncToCloud}
             disabled={isSyncingCloud}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-extrabold text-xs rounded-lg shadow transition"
-            title="Sincronizar planos, zonas y activos locales con Neon PostgreSQL y Backblaze B2"
+            className="flex items-center space-x-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs rounded-md shadow transition"
+            title="Sincronizar datos y planos con Neon PostgreSQL y Backblaze B2"
           >
             <CloudUpload className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-bounce' : ''}`} />
-            <span>{isSyncingCloud ? 'Sincronizando...' : 'Sincronizar Nube'}</span>
+            <span className="hidden md:inline">{isSyncingCloud ? 'Sincronizando...' : 'Sincronizar'}</span>
           </button>
 
+          {/* Botón Subir Plano */}
           <button
             type="button"
-            onClick={() => setIsReportModalOpen(true)}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-lg shadow transition"
-            title="Generar e imprimir informe técnico ejecutivo de relevamiento"
+            onClick={() => setIsUploadPlanModalOpen(true)}
+            className="flex items-center space-x-1 px-2.5 py-1 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-md shadow transition"
+            title="Subir nuevo plano (PDF, DXF, SVG o Imagen)"
           >
-            <FileSpreadsheet className="w-3.5 h-3.5" />
-            <span>Generar Reporte</span>
+            <Plus className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Plano</span>
           </button>
 
-          <button
-            type="button"
-            onClick={handleExportPlantJSON}
-            className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded border border-slate-800"
-            title="Exportar respaldo de planta (JSON)"
-          >
-            <FileDown className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={handleWipeData}
-            className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/50 rounded border border-slate-800"
-            title="Vaciar datos y empezar desde cero"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          {/* Menú Desplegable "Más Opciones" */}
+          <div className="relative" ref={menuRef}>
+            <button
+              type="button"
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+              className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md border border-slate-700/80 transition"
+              title="Herramientas y gestión de planta"
+            >
+              <MoreVertical className="w-4 h-4" />
+            </button>
+
+            {isMenuOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-56 bg-slate-900 border border-slate-700/90 rounded-xl shadow-2xl py-1 text-xs text-slate-200 z-50 divide-y divide-slate-800 animate-in fade-in zoom-in-95">
+                <div className="py-1">
+                  <button
+                    onClick={() => { setIsHitosModalOpen(true); setIsMenuOpen(false); }}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-slate-800 text-left text-slate-200 hover:text-white"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Hitos Maps (GPS)</span>
+                  </button>
+                  <button
+                    onClick={() => { setIsReportModalOpen(true); setIsMenuOpen(false); }}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-slate-800 text-left text-slate-200 hover:text-white"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Generar Reporte Técnico</span>
+                  </button>
+                  <button
+                    onClick={() => { setIsReplacePlanModalOpen(true); setIsMenuOpen(false); }}
+                    disabled={!currentPlano}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-slate-800 text-left text-slate-200 hover:text-white disabled:opacity-40"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Reemplazar Archivo (DXF/PDF)</span>
+                  </button>
+                  <button
+                    onClick={() => { handleExportPlantJSON(); setIsMenuOpen(false); }}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-slate-800 text-left text-slate-200 hover:text-white"
+                  >
+                    <FileDown className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Exportar Respaldo JSON</span>
+                  </button>
+                </div>
+
+                <div className="py-1">
+                  <button
+                    onClick={() => { handleDeleteCurrentPlano(); setIsMenuOpen(false); }}
+                    disabled={!currentPlano}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-red-950/40 text-left text-red-400 hover:text-red-300 disabled:opacity-40"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Eliminar plano actual</span>
+                  </button>
+                  <button
+                    onClick={() => { handleWipeData(); setIsMenuOpen(false); }}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-red-950/40 text-left text-red-400 hover:text-red-300"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Vaciar datos (Reset)</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Banner de Notificaciones */}
-      {notification && (
-        <div className="bg-emerald-950/90 border-b border-emerald-500/50 px-6 py-2 text-emerald-200 text-xs flex items-center space-x-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-          <span>{notification}</span>
-        </div>
-      )}
+      {/* ÁREA DEL PLANO: 100% Edge-to-Edge */}
+      <div className="flex-1 w-full h-[calc(100vh-48px)] relative overflow-hidden">
+        <InteractivePlantMap
+          plano={currentPlano}
+          zonas={zonasFiltradas}
+          elementos={elementosFiltrados}
+          selectedZonaId={selectedZona?.id}
+          selectedElementoId={selectedElemento?.id}
+          activeMode={activeMode}
+          onChangeMode={(mode) => setActiveMode(mode)}
+          onSelectZona={handleSelectZona}
+          onSelectElemento={handleSelectElemento}
+          onMapClick={handleMapClick}
+          onOpenUploadModal={() => setIsUploadPlanModalOpen(true)}
+          onPlanUpdated={() => reloadFromDB()}
+          onUpdateZonePolygon={handleUpdateZonePolygon}
+          onPolygonCreated={handlePolygonCreated}
+          isEditingPolygon={isEditingZonePolygon}
+          onToggleEditPolygon={() => setIsEditingZonePolygon(prev => !prev)}
+        />
 
-      {/* Área Central: Plano SVG Interactivo + Panel Lateral Drawer */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Contenedor del Plano */}
-        <div className="flex-1 p-6 flex flex-col justify-between overflow-y-auto">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-black text-white tracking-tight flex items-center space-x-2">
-                  <span>{currentPlano ? currentPlano.titulo : "Visor de Planta y Relevamiento"}</span>
-                  {currentPlano && (
-                    <span className="text-xs font-mono px-2 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800">
-                      v{currentPlano.version} · {currentPlano.dimensiones_viewbox.width}x{currentPlano.dimensiones_viewbox.height}
-                    </span>
-                  )}
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  {activeMode === 'add_pin' 
-                    ? '👉 Haz clic en cualquier punto del plano para colocar un nuevo Pin de Activo físico (viga, columna, baranda, etc.).'
-                    : activeMode === 'add_zone'
-                    ? '👉 Haz clic en el plano para definir los vértices de una nueva Zona de Inspección con requerimientos de andamio.'
-                    : 'Modo Inspección: Selecciona una zona o pin para consultar su ficha técnica, historial y generar su etiqueta QR.'}
-                </p>
-              </div>
-
-              {/* Filtro de Nivel / Cota y Métricas Rápidas */}
-              <div className="flex flex-wrap items-center gap-3 text-xs">
-                <div className="flex items-center space-x-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
-                  <span className="text-slate-400 font-bold uppercase text-[10px]">Cota / Nivel:</span>
-                  <select
-                    value={filtroNivel}
-                    onChange={(e) => setFiltroNivel(e.target.value)}
-                    className="bg-slate-950 border border-slate-700 text-amber-400 font-mono font-bold text-xs rounded px-2 py-1 focus:outline-none"
-                  >
-                    <option value="todos">🏢 Todos los Niveles (Multicapa)</option>
-                    <option value="146000">🟢 Cota +146.000 m (Nivel Suelo Base)</option>
-                    <option value="152000">🟡 Cota +152.000 m (+6.00 m Pasarelas)</option>
-                    <option value="158000">🟠 Cota +158.000 m (+12.00 m Operación)</option>
-                    <option value="170000">🔴 Cota +170.000 m (+24.00 m Nivel Superior)</option>
-                  </select>
-                </div>
-
-                <div className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
-                  <span className="text-slate-400 block text-[10px]">Activos Visibles</span>
-                  <span className="font-mono font-bold text-white">{elementosFiltrados.length} Activos</span>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
-                  <span className="text-slate-400 block text-[10px]">Zonas Visibles</span>
-                  <span className="font-mono font-bold text-sky-400">{zonasFiltradas.length} Zonas</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Componente del Visor SVG Interactivo */}
-            <InteractivePlantMap
-              plano={currentPlano}
-              zonas={zonasFiltradas}
-              elementos={elementosFiltrados}
-              selectedZonaId={selectedZona?.id}
-              selectedElementoId={selectedElemento?.id}
-              activeMode={activeMode}
-              onSelectZona={handleSelectZona}
-              onSelectElemento={handleSelectElemento}
-              onMapClick={handleMapClick}
-              onOpenUploadModal={() => setIsUploadPlanModalOpen(true)}
-              onPlanUpdated={() => reloadFromDB()}
-              onUpdateZonePolygon={handleUpdateZonePolygon}
-              onPolygonCreated={handlePolygonCreated}
-              isEditingPolygon={isEditingZonePolygon}
-              onToggleEditPolygon={() => setIsEditingZonePolygon(prev => !prev)}
-            />
-          </div>
-
-          <div className="mt-4 flex items-center justify-between text-xs text-slate-500 border-t border-slate-800/80 pt-3">
-            <span>Soporta planos generales de fábrica en SVG, DXF/CAD o planos arquitectónicos escaneados (PNG/JPG).</span>
-            <span className="font-mono">Persistencia activa en IndexedDB</span>
-          </div>
-        </div>
-
-        {/* Panel Lateral Drawer con Métricas en Vivo y Drill-down */}
+        {/* Panel Lateral Drawer Flotante */}
         <ZoneDrawer
           zona={selectedZona}
           elemento={selectedElemento}
@@ -683,91 +547,101 @@ export default function PlanosIngenieriaPage() {
         />
       </div>
 
-      {/* Modal para Subir Plano y Crear Áreas */}
+      {/* Modales Existentes */}
       <UploadPlanModal
         isOpen={isUploadPlanModalOpen}
         onClose={() => setIsUploadPlanModalOpen(false)}
         areas={areas}
-        onPlanCreated={handlePlanCreated}
+        onPlanCreated={(newPlan, newArea) => {
+          reloadFromDB();
+          if (newArea) setSelectedAreaId(newArea.id);
+          setSelectedPlanoId(newPlan.id);
+          setIsUploadPlanModalOpen(false);
+          setNotification(`Plano "${newPlan.titulo}" cargado exitosamente.`);
+          setTimeout(() => setNotification(null), 3000);
+        }}
       />
 
-      {/* Modal para Reemplazar Archivo del Plano Actual conservando zonas y pines */}
       <ReplacePlanFileModal
         isOpen={isReplacePlanModalOpen}
         onClose={() => setIsReplacePlanModalOpen(false)}
         currentPlano={currentPlano}
-        onPlanReplaced={handlePlanReplaced}
+        onPlanReplaced={(updated) => {
+          reloadFromDB();
+          setIsReplacePlanModalOpen(false);
+          setNotification(`Archivo del plano actualizado a v${updated.version}.`);
+          setTimeout(() => setNotification(null), 3000);
+        }}
       />
 
-      {/* Modal para Colocar Pin de Activo */}
       <CreateElementModal
         isOpen={isCreateElementModalOpen}
         onClose={() => {
           setIsCreateElementModalOpen(false);
-          setClickCoordinates(null);
-          setCustomPolygonPoints(null);
+          setPendingPinCoords(null);
         }}
-        coordinates={clickCoordinates}
+        coordinates={pendingPinCoords}
         zonas={zonasPlano}
         currentPlanoId={selectedPlanoId}
-        onElementCreated={handleElementCreated}
+        onElementCreated={(newElem) => {
+          reloadFromDB();
+          setSelectedElemento(newElem);
+          setIsCreateElementModalOpen(false);
+          setPendingPinCoords(null);
+          setNotification(`Activo "${newElem.tag_codigo}" registrado.`);
+          setTimeout(() => setNotification(null), 3000);
+        }}
       />
 
-      {/* Modal para Crear Zona de Inspección */}
       <CreateZoneModal
         isOpen={isCreateZoneModalOpen}
         onClose={() => {
           setIsCreateZoneModalOpen(false);
-          setClickCoordinates(null);
-          setCustomPolygonPoints(null);
+          setCustomPolygonPoints(undefined);
         }}
         currentPlanoId={selectedPlanoId}
-        defaultPoints={customPolygonPoints || (clickCoordinates ? [
-          { x: clickCoordinates.x - 150, y: clickCoordinates.y - 100 },
-          { x: clickCoordinates.x + 150, y: clickCoordinates.y - 100 },
-          { x: clickCoordinates.x + 150, y: clickCoordinates.y + 100 },
-          { x: clickCoordinates.x - 150, y: clickCoordinates.y + 100 }
-        ] : undefined)}
-        onZoneCreated={handleZoneCreated}
+        defaultPoints={customPolygonPoints}
+        onZoneCreated={(newZone) => {
+          reloadFromDB();
+          setSelectedZona(newZone);
+          setIsCreateZoneModalOpen(false);
+          setCustomPolygonPoints(undefined);
+          setNotification(`Zona "${newZone.codigo}" creada.`);
+          setTimeout(() => setNotification(null), 3000);
+        }}
       />
 
-      {/* Modal para Editar Datos de la Zona y Cálculo de Andamio */}
       <EditZoneModal
         isOpen={isEditZoneModalOpen}
         onClose={() => {
           setIsEditZoneModalOpen(false);
           setZoneToEdit(undefined);
         }}
-        zona={zoneToEdit || selectedZona}
+        zona={zoneToEdit}
         onZoneUpdated={handleZoneUpdated}
       />
 
-      {/* Modal Generador e Impresor de Etiquetas QR */}
-      <QRLabelGeneratorModal
-        elemento={targetElementForQR}
-        isOpen={isQRModalOpen}
-        onClose={() => {
-          setIsQRModalOpen(false);
-          setTargetElementForQR(null);
-        }}
-      />
+      {selectedElemento && (
+        <QRLabelGeneratorModal
+          isOpen={isQRModalOpen}
+          onClose={() => setIsQRModalOpen(false)}
+          elemento={selectedElemento}
+        />
+      )}
 
-      {/* Modal de Reporte Ejecutivo de Relevamiento */}
       <ReporteRelevamientoModal
         isOpen={isReportModalOpen}
         onClose={() => setIsReportModalOpen(false)}
         area={currentArea}
-        elementos={elementosPlano}
-        inspecciones={inspecciones}
         plano={currentPlano}
+        elementos={elementos}
+        inspecciones={inspecciones}
       />
 
-      {/* Modal de Gestión de Hitos Geográficos Maps (Admin) */}
       <HitosMapsModal
         isOpen={isHitosModalOpen}
         onClose={() => setIsHitosModalOpen(false)}
         currentPlano={currentPlano}
-        onHitosUpdated={() => reloadFromDB()}
       />
     </div>
   );
