@@ -20,7 +20,9 @@ import {
   FileDown,
   FileSpreadsheet,
   Globe,
-  RefreshCw
+  RefreshCw,
+  CloudUpload,
+  Cloud
 } from 'lucide-react';
 import { InteractivePlantMap } from '../../../components/ingenieria/InteractivePlantMap';
 import { ZoneDrawer } from '../../../components/ingenieria/ZoneDrawer';
@@ -315,6 +317,44 @@ export default function PlanosIngenieriaPage() {
     setTimeout(() => setNotification(null), 3000);
   };
 
+  // Sincronización completa con Neon PostgreSQL y Backblaze B2 Storage
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+
+  const handleSyncToCloud = async () => {
+    try {
+      setIsSyncingCloud(true);
+      const allAreas = await db.areas.toArray();
+      const allPlanos = await db.planos.toArray();
+      const allZonas = await db.zonas.toArray();
+      const allElementos = await db.elementos.toArray();
+      const allInspecciones = await db.inspecciones.toArray();
+
+      const res = await fetch('/api/sync-neon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          areas: allAreas,
+          planos: allPlanos,
+          zonas: allZonas,
+          elementos: allElementos,
+          inspecciones: allInspecciones
+        })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setNotification(`¡Sincronizado con Neon y Backblaze B2! (${data.synced?.planos || 0} planos, ${data.synced?.zonas || 0} zonas, ${data.synced?.elementos || 0} activos respaldados en la nube).`);
+      } else {
+        alert("Error en sincronización: " + (data.error || "Desconocido"));
+      }
+    } catch (err: any) {
+      alert("Error de conexión al sincronizar con la nube: " + err?.message);
+    } finally {
+      setIsSyncingCloud(false);
+      setTimeout(() => setNotification(null), 5000);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-screen overflow-hidden">
       {/* Barra Superior de Control de Planta y Modos */}
@@ -464,6 +504,17 @@ export default function PlanosIngenieriaPage() {
           >
             <Globe className="w-3.5 h-3.5" />
             <span>Hitos Maps (GPS)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSyncToCloud}
+            disabled={isSyncingCloud}
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-extrabold text-xs rounded-lg shadow transition"
+            title="Sincronizar planos, zonas y activos locales con Neon PostgreSQL y Backblaze B2"
+          >
+            <CloudUpload className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-bounce' : ''}`} />
+            <span>{isSyncingCloud ? 'Sincronizando...' : 'Sincronizar Nube'}</span>
           </button>
 
           <button

@@ -158,6 +158,7 @@ export interface Inspeccion {
   proxima_inspeccion_fecha?: string;
   coordenadas_gps?: { lat: number; lng: number; precision_m?: number };
   observaciones?: string;
+  diagnostico_ia?: any;
   fotos: FotoInspeccionLocal[];
   validado_por_ingeniero_id?: string;
   fecha_validacion?: string;
