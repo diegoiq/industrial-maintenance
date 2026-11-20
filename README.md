@@ -1,100 +1,148 @@
 # INDUSTRIAL MAINTENANCE
-### Asset Integrity · Corrosion Management (ISO 4628 / ASTM D610) · Maintenance Planning
+### Asset Integrity · Corrosion Management (ISO 4628 / ASTM D610) · Maintenance & Scaffolding Planning
 
-Plataforma monorepo de uso interno en planta industrial, optimizada para desplegarse sobre **Render** (Node.js & Python FastAPI) y **Supabase** (PostgreSQL, Storage y Auth) dentro de las cuotas del nivel gratuito (Free Tier) o económico (Starter).
+Plataforma monorepo de ingeniería y relevamiento en planta industrial, optimizada para arquitectura serverless de alto desempeño y costo cero sobre **Vercel** (Frontend Next.js 14), **Neon** (PostgreSQL Serverless) y **Backblaze B2** (Object Storage S3 para planos y fotos de alta resolución), con cliente **PWA Mobile-First 100% Offline** en campo (IndexedDB / Dexie.js).
 
 ---
 
-## 1. Arquitectura y Módulos del Sistema
+## 1. Arquitectura del Sistema
 
 ```
 c:\Relevamiento\
-├── render.yaml                          # Despliegue unificado de frontend web y motor API en Render
+├── .gitignore                           # Exclusión de node_modules, .next, builds y claves locales
 ├── README.md                            # Guía integral de módulos y operaciones
-├── supabase/
+├── supabase/                            # Esquemas SQL compatibles con PostgreSQL (Neon / Supabase)
 │   └── migrations/
-│       └── 001_initial_schema.sql       # Tablas, RLS, Auditoría automática y RPC get_supabase_usage()
+│       └── 001_initial_schema.sql       # Tablas, relaciones, RLS y auditoría
 └── apps/
-    ├── api/                             # Motor FastAPI (Python 3.11)
-    │   ├── requirements.txt             # FastAPI, psutil, ezdxf, PyMuPDF, openpyxl
-    │   └── main.py                      # Endpoints: /health/metrics, /api/v1/cubicar, /api/v1/ai/analyze-corrosion
-    └── web/                             # Next.js 14+ (App Router, Tailwind CSS, TypeScript)
+    ├── api/                             # Microservicio de procesamiento analítico (Python / FastAPI)
+    │   ├── requirements.txt             # ezdxf, PyMuPDF, openpyxl, psutil
+    │   └── main.py                      # Algoritmos de cubicación y análisis de corrosión
+    └── web/                             # Aplicación Principal Next.js 14+ (Vercel Ready)
         ├── package.json & tsconfig.json
         └── src/
             ├── app/
             │   ├── page.tsx             # Selector de acceso (/campo vs /ingenieria)
-            │   ├── campo/page.tsx       # Módulo 2: PWA Mobile-First 100% Offline (Dexie.js)
+            │   ├── campo/page.tsx       # Módulo PWA: Relevamiento 100% Offline con QR y fotos
             │   └── ingenieria/
-            │       ├── planos/page.tsx  # Módulo 1: Visor SVG interactivo, polígonos, pines y Drawer
-            │       ├── parametros/page.tsx # Módulo 4: Parámetros, cubicador y Matriz de Criticidad
-            │       ├── campanas/page.tsx   # Módulo 5: Campañas de intervención y andamio compartido
-            │       ├── presupuestos/page.tsx # Módulo 6: Plan plurianual (3-5 años) y exportación SAP PM
-            │       ├── diagnostico-ia/page.tsx # Módulo 3: Diagnóstico IA (Gemini) Human-in-the-Loop
-            │       └── sistema/page.tsx # Módulo 7: Monitor de Salud y Límites (Admin)
+            │       ├── planos/page.tsx  # Visor CAD/PDF vectorial, polígonos, pines y Drawer
+            │       ├── parametros/page.tsx # Matriz de criticidad, cubicador paramétrico y costos
+            │       ├── campanas/page.tsx   # Optimización de andamio compartido y paradas de planta
+            │       ├── presupuestos/page.tsx # Plan plurianual (3-5 años) y exportación SAP PM
+            │       ├── diagnostico-ia/page.tsx # Diagnóstico IA (Gemini) Human-in-the-Loop
+            │       └── sistema/page.tsx # Monitor de infraestructura y telemetría
             ├── components/
             │   ├── campo/               # VectorAnnotationCanvas, SyncStatusBadge, QRScannerModal
-            │   ├── ingenieria/          # InteractivePlantMap, ZoneDrawer, QRLabelGeneratorModal
-            │   └── sistema/             # MetricCard con semáforos (<70%, 70-85%, >85%)
+            │   ├── ingenieria/          # InteractivePlantMap, ZoneDrawer, ReplacePlanFileModal, UploadPlanModal
+            │   └── sistema/             # MetricCard con semáforos en tiempo real
             └── lib/
-                ├── db.ts                # IndexedDB con Dexie.js
-                ├── imageCompression.ts   # Compresión WebP en navegador (máx 1600px) y miniaturas (~20 KB)
-                ├── syncManager.ts        # Cola con backoff y tolerancia a cold start de Render
-                └── mockData.ts          # Semillas maestras de planta y telemetría
+                ├── db.ts                # Base de datos local IndexedDB (Dexie.js)
+                ├── dxfParser.ts         # Parser de AutoCAD DXF a SVG nativo con filtrado de capas
+                ├── pdfRenderer.ts       # Conversor vectorial nativo PDF (SVGGraphics) & Canvas Ultra-HD
+                ├── imageCompression.ts   # Compresión WebP en navegador (<180 KB)
+                ├── syncManager.ts        # Sincronización offline-first con cola y reintentos
+                └── mockData.ts          # Semillas maestras de planta y datos iniciales
 ```
 
 ---
 
-## 2. Detalle de Módulos Implementados
+## 2. Stack de Infraestructura y Despliegue en la Nube
 
-### Módulo 1 – Gestión de Planta y Planos (`/ingenieria/planos`)
-- Visor SVG interactivo con pan & zoom.
-- Polígonos de zonas de inspección (`131-Z04 Torres`, `131-Z02 Clarificadores`, `131-Z01 Bombas`).
-- Pines con semáforo dinámico de corrosión:
-  - 🟢 **Verde**: Condición normal (Ri 0 - Ri 1)
-  - 🟡 **Amarillo**: Deterioro incipiente (Ri 2 - Ri 3)
-  - 🟠 **Naranja**: Corrosión severa (Ri 4)
-  - 🔴 **Rojo**: Reemplazo estructural crítico (Ri 5 con aura pulsante)
-  - ⚪ **Gris**: Sin relevar
-- Panel lateral (**Drawer**) con métricas de zona en vivo.
-- Generador de etiquetas QR imprimibles por activo.
+| Componente | Plataforma / Tecnología | Ventajas y Cuota Gratuita |
+| :--- | :--- | :--- |
+| **Frontend & Serverless Edge** | **Vercel** (Next.js 14) | Carga global instantánea (<1s), sin límite de 750 horas, despliegues automáticos vía Git. |
+| **Base de Datos Relacional** | **Neon** (PostgreSQL Serverless) | Escalado a cero y reactivación en <500ms, sin suspensión destructiva a los 7 días. |
+| **Storage de Planos y Fotos** | **Backblaze B2** (API S3) | **10 GB de almacenamiento gratuito**, descarga gratis con Cloudflare Bandwidth Alliance. |
+| **Persistencia Local en Campo** | **Dexie.js** (IndexedDB) | Operación 100% desconectada en sótanos, túneles y áreas sin cobertura celular o WiFi. |
 
-### Módulo 2 – App de Campo Offline (`/campo`)
-- PWA mobile-first de alto contraste.
-- **100% Offline con Dexie.js**: descarga y precarga local de áreas y planos.
-- **Compresión WebP en cliente**: reduce fotos de 8-12 MB a ~180 KB antes de guardar en IndexedDB.
-- **Lienzo de anotación vectorial (`VectorAnnotationCanvas`)**: círculos, flechas y cuadros delimitadores guardados como coordenadas JSON (0 KB extra en Storage).
-- **SyncManager tolerante a Cold Starts**: aviso *"Despertando servidor de ingeniería en Render..."* y reintentos automáticos.
+---
 
-### Módulo 3 – Diagnóstico IA con Human-in-the-Loop (`/ingenieria/diagnostico-ia`)
-- Análisis multimodal de corrosión con Gemini bajo norma **ISO 4628 / ASTM D610**.
-- **Guardarraíl Human-in-the-Loop**: la IA solo emite pre-diagnósticos; el sistema bloquea órdenes de reemplazo hasta que un Ingeniero valide y firme el informe.
-- **Comparador Histórico**: comparación año a año (2024 vs 2025/2026) con cálculo de velocidad de corrosión (mm/año) y proyección de vida útil remanente.
+## 3. Módulos y Funcionalidades Principales
 
-### Módulo 4 – Motor de Cubicaciones y Criticidad (`/ingenieria/parametros`)
-- Tabla editable de coeficientes de planta (rendimientos HH, tarifas, costos de pintura, perfiles).
-- **Matriz de Criticidad Interactiva**: Severidad (1 a 5) × Criticidad de Activo (1 a 5) = 1 a 25, con priorización automática (**P1 Parada**, **P2 Campaña**, **P3 Preventivo**, **P4 Rutinario**).
-- **Simulador Paramétrico en Vivo**: cálculo automático de m² pintura, kg acero reemplazo, m³ andamio envolvente, desglose de HH y costo total estimado.
-- Bitácora automática en `auditoria_cambios`.
+### 🗺️ Módulo de Planos y Planta Interactiva (`/ingenieria/planos`)
+* **Motor Vectorial Nativo para Planos:**
+  * **Soporte AutoCAD DXF (`.dxf`):** Parser directo de entidades CAD (`LINE`, `LWPOLYLINE`, `CIRCLE`, `ARC`, `TEXT`) con filtrado automático de capas congeladas, apagadas, `DEFPOINTS` y espacio papel.
+  * **Soporte PDF de Ultra Alta Resolución (1200 / 2400 DPI):** Renderizado vectorial directo mediante `pdfjsLib.SVGGraphics`, garantizando nitidez matemática infinita (sin pixelación al hacer zoom profundo).
+* **Super-Zoom hasta 40x (4000%):** Navegación fluida con rueda de ratón centrada en el puntero, paneo libre (`limitToBounds: false`) y botones de salto rápido (`+2x`, `+6x`).
+* **Etiquetado Mínimo no Invasivo:** Las zonas muestran únicamente un rótulo exterior compacto (ej. `[EDI-EF]`) para no tapar equipos, bombas, cañerías ni textos de ingeniería.
+* **Ficha Técnica en Drawer Lateral (`ZoneDrawer`):** Al seleccionar una zona, el panel lateral muestra en detalle:
+  * Código y nombre completo del sector.
+  * Georreferenciación y Cota multinivel (`+146.000 m Suelo Base`, `+152.000 m Pasarelas`, etc.).
+  * Disciplinas involucradas (Estructuras, Parral de Cañerías, Soportes, Hormigón).
+  * Cubicación de andamios ($m^3$, altura de parada, criticidad).
+  * Editor de vértices en plano (`P1..Pn`) y botones para recalcular parámetros.
+* **Pines de Activos con Semáforo de Corrosión:**
+  * 🟢 **Verde**: Condición normal (Ri 0 - Ri 1)
+  * 🟡 **Amarillo**: Deterioro incipiente (Ri 2 - Ri 3)
+  * 🟠 **Naranja**: Corrosión severa (Ri 4)
+  * 🔴 **Rojo**: Reemplazo estructural crítico (Ri 5 con pulsación visual)
+  * ⚪ **Gris**: Sin relevar
 
-### Módulo 5 – Campañas y Andamios (`/ingenieria/campanas`)
-- Agrupación automática de intervenciones por zona física de acceso.
-- Estrategia de **Andamio Compartido**: un solo montaje para múltiples activos, calculando y mostrando el ahorro económico en USD.
-- Clasificación operativa: **Parada de Planta** vs **Ejecución en Marcha**.
+---
 
-### Módulo 6 – Presupuestos y Plan Maestro (`/ingenieria/presupuestos`)
-- Simulador plurianual a 3 y 5 años con curva de inversión por especialidad (Estructuras, Pintura, Andamios) y proyección de HH.
-- **Exportación en CSV/Excel compatible con SAP PM**: incluye campos `ubicacion_tecnica_erp` y `codigo_equipo_erp` para carga directa de órdenes de trabajo.
-- Herramienta de archivado ZIP y backup de fotos para liberar almacenamiento en Supabase Storage.
+### 📱 Módulo de Campo Mobile-First (`/campo`)
+* **100% Desconectado:** Diseñado para teléfonos y tablets industriales con UI de alto contraste para visibilidad bajo luz solar.
+* **Lector QR Integrado:** Escaneo de chapas metálicas o etiquetas con cámara trasera para abrir la ficha del activo al instante.
+* **Lienzo de Anotación Vectorial (`VectorAnnotationCanvas`):** Permite dibujar flechas, círculos y cotas sobre las fotografías capturadas, almacenando los trazos como vectores JSON livianos.
+* **Compresión Inteligente en Cliente:** Reduce fotos pesadas de 12 MP a formatos WebP optimizados de ~180 KB antes de almacenarlas en IndexedDB.
 
-### Módulo 7 – Monitor de Salud y Límites (`/ingenieria/sistema`)
-- Panel exclusivo para rol `admin`.
-- Semáforo preventivo:
-  - 🟢 **Verde**: < 70%
-  - 🟡 **Amarillo (Preventivo)**: 70% – 85%
-  - 🔴 **Rojo (Crítico)**: > 85% con acciones inmediatas
-- Medición de cuotas:
-  - **Supabase DB**: vs 500 MB (vía RPC `get_supabase_usage()`).
-  - **Supabase Storage**: vs 1 GB (desglose por bucket y botón de archivado ZIP).
-  - **Supabase Egress**: vs 5 GB/mes.
-  - **Render RAM**: vs 512 MB (vía `psutil` en `/health/metrics`).
-  - **Prevención de suspensión Supabase**: botón de Keep-Alive semanal.
+---
+
+### 🤖 Diagnóstico con Inteligencia Artificial (`/ingenieria/diagnostico-ia`)
+* **Análisis Multimodal de Corrosión:** Clasificación automatizada de grado de oxidación según normas **ISO 4628** (Ri 1 a Ri 5) y **ASTM D610**.
+* **Guardarraíl Human-in-the-Loop:** La IA genera una sugerencia técnica preliminar, pero requiere validación y firma digital del inspector para generar órdenes de trabajo.
+* **Comparador Histórico Interanual:** Mapeo fotográfico año a año para calcular la velocidad de degradación (mm/año) y proyectar el tiempo hasta falla.
+
+---
+
+### 📊 Cubicaciones, Campañas y Plan Maestro (`/ingenieria/parametros` y `/presupuestos`)
+* **Matriz de Criticidad Industrial:** Severidad $\times$ Probabilidad (1 a 25) con semaforización de prioridades (Parada de Planta, Campaña, Preventivo, Rutinario).
+* **Cálculo de Andamio Compartido:** Algoritmo que detecta elementos contiguos para reutilizar una misma estructura tubular, mostrando el ahorro neto en USD y horas hombre.
+* **Integración con SAP PM:** Exportación de presupuestos y campañas directamente a formato CSV compatible con ERP, incluyendo códigos de equipo y ubicaciones técnicas.
+
+---
+
+## 4. Guía de Ejecución Local
+
+### Prerrequisitos:
+* Node.js v18+ o v20+
+* NPM / PNPM
+
+### Pasos:
+```bash
+# 1. Clonar el repositorio
+git clone https://github.com/diegoiq/industrial-maintenance.git
+cd industrial-maintenance
+
+# 2. Instalar dependencias del frontend web
+cd apps/web
+npm install
+
+# 3. Iniciar en modo desarrollo
+npm run dev
+
+# 4. O compilar para producción
+npm run build
+npm start
+```
+Abre tu navegador en [http://localhost:3000](http://localhost:3000).
+
+---
+
+## 5. Variables de Entorno para Producción (Vercel)
+
+Al conectar este repositorio con **Vercel**, configura las siguientes variables en el panel de Vercel:
+
+```env
+# Conexión a Neon PostgreSQL
+DATABASE_URL=postgres://usuario:password@ep-ejemplo.us-east-2.aws.neon.tech/neondb?sslmode=require
+
+# Conexión a Backblaze B2 (API S3)
+B2_ENDPOINT=s3.us-east-005.backblazeb2.com
+B2_BUCKET_NAME=industrial-maintenance-assets
+B2_KEY_ID=tu_application_key_id
+B2_APPLICATION_KEY=tu_application_key
+
+# IA Multimodal (Opcional para Diagnóstico)
+GEMINI_API_KEY=tu_clave_gemini
+```
