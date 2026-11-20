@@ -7,11 +7,11 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const areas = await sql`SELECT id, codigo, nombre FROM public.areas ORDER BY codigo`;
-    const planos = await sql`SELECT id, area_id, titulo, version, created_at FROM public.planos ORDER BY created_at DESC`;
-    const zonas = await sql`SELECT id, plano_id, codigo, nombre, cota_nivel FROM public.zonas_inspeccion ORDER BY codigo`;
-    const elementos = await sql`SELECT count(*)::int as count FROM public.elementos`;
-    const inspecciones = await sql`SELECT count(*)::int as count FROM public.inspecciones`;
+    const areas = await sql`SELECT * FROM public.areas ORDER BY codigo`;
+    const planos = await sql`SELECT * FROM public.planos ORDER BY created_at DESC`;
+    const zonas = await sql`SELECT * FROM public.zonas_inspeccion ORDER BY codigo`;
+    const elementos = await sql`SELECT * FROM public.elementos ORDER BY tag_codigo`;
+    const inspecciones = await sql`SELECT * FROM public.inspecciones ORDER BY fecha_inspeccion DESC`;
 
     return NextResponse.json({
       success: true,
@@ -19,8 +19,10 @@ export async function GET() {
         areas,
         planos,
         zonas,
-        elementosCount: elementos[0]?.count || 0,
-        inspeccionesCount: inspecciones[0]?.count || 0,
+        elementos,
+        inspecciones,
+        elementosCount: elementos.length,
+        inspeccionesCount: inspecciones.length,
       }
     });
   } catch (err: any) {

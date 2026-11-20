@@ -72,13 +72,36 @@ export default function PlanosIngenieriaPage() {
   const [filtroNivel, setFiltroNivel] = useState<string>('todos');
   const [notification, setNotification] = useState<string | null>(null);
 
-  // Cargar datos persistentes desde IndexedDB
+  // Cargar datos persistentes desde IndexedDB (con hidratación automática desde Neon Cloud)
   const reloadFromDB = async () => {
-    const loadedAreas = await db.areas.toArray();
-    const loadedPlanos = await db.planos.toArray();
-    const loadedZonas = await db.zonas.toArray();
-    const loadedElementos = await db.elementos.toArray();
-    const loadedInspecciones = await db.inspecciones.toArray();
+    let loadedAreas = await db.areas.toArray();
+    let loadedPlanos = await db.planos.toArray();
+    let loadedZonas = await db.zonas.toArray();
+    let loadedElementos = await db.elementos.toArray();
+    let loadedInspecciones = await db.inspecciones.toArray();
+
+    // Si el almacenamiento local del dispositivo está vacío, hidratar desde Neon Cloud
+    if (loadedPlanos.length === 0) {
+      try {
+        const res = await fetch('/api/sync-neon');
+        const json = await res.json();
+        if (json.success && json.data.planos && json.data.planos.length > 0) {
+          for (const a of (json.data.areas || [])) await db.areas.put(a);
+          for (const p of (json.data.planos || [])) await db.planos.put(p);
+          for (const z of (json.data.zonas || [])) await db.zonas.put(z);
+          for (const e of (json.data.elementos || [])) await db.elementos.put(e);
+          for (const i of (json.data.inspecciones || [])) await db.inspecciones.put(i);
+
+          loadedAreas = await db.areas.toArray();
+          loadedPlanos = await db.planos.toArray();
+          loadedZonas = await db.zonas.toArray();
+          loadedElementos = await db.elementos.toArray();
+          loadedInspecciones = await db.inspecciones.toArray();
+        }
+      } catch (err) {
+        console.warn("Fallo hidratación automática desde Neon:", err);
+      }
+    }
 
     setAreas(loadedAreas);
     setPlanos(loadedPlanos);

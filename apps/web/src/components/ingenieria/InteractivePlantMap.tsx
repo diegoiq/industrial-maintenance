@@ -63,7 +63,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
 }) => {
   const [showZonasLayer, setShowZonasLayer] = useState(true);
   const [showPinsLayer, setShowPinsLayer] = useState(true);
-  const [resolvedImageUrl, setResolvedImageUrl] = useState<string | null>(plano?.archivo_data_url || null);
+  const [resolvedImageUrl, setResolvedImageUrl] = useState<string | null>(plano?.archivo_data_url || plano?.archivo_original_url || null);
   const [isConvertingPdf, setIsConvertingPdf] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
@@ -606,9 +606,9 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                 {plano.svg_content ? (
                   <g dangerouslySetInnerHTML={{ __html: plano.svg_content }} />
                 ) : (
-                  (resolvedImageUrl || (plano.archivo_data_url && !plano.archivo_data_url.startsWith('data:application/pdf'))) && (
+                  (resolvedImageUrl || plano.archivo_data_url || plano.archivo_original_url) && (
                     <image
-                      href={(resolvedImageUrl || plano.archivo_data_url)!}
+                      href={(resolvedImageUrl || plano.archivo_data_url || plano.archivo_original_url)!}
                       x="0"
                       y="0"
                       width={vbWidth}
@@ -619,7 +619,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   )
                 )}
 
-                {!plano.archivo_data_url && !plano.svg_content && (
+                {!plano.archivo_data_url && !plano.archivo_original_url && !plano.svg_content && (
                   <g stroke="#475569" strokeWidth="2" fill="none">
                     <rect x="100" y="100" width={vbWidth - 200} height={vbHeight - 200} fill="#0f172a" stroke="#38bdf8" strokeWidth="2" rx="8" />
                     <text x="140" y="160" fill="#94a3b8" fontSize="24" fontFamily="monospace" fontWeight="bold">
