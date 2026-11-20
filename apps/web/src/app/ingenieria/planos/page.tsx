@@ -24,25 +24,28 @@ import { ReplacePlanFileModal } from '../../../components/ingenieria/ReplacePlan
 import { CreateElementModal } from '../../../components/ingenieria/CreateElementModal';
 import { CreateZoneModal } from '../../../components/ingenieria/CreateZoneModal';
 import { EditZoneModal } from '../../../components/ingenieria/EditZoneModal';
+import { CreateHitoModal } from '../../../components/ingenieria/CreateHitoModal';
 import { ReporteRelevamientoModal } from '../../../components/campo/ReporteRelevamientoModal';
 import { HitosMapsModal } from '../../../components/ingenieria/HitosMapsModal';
 import { db } from '../../../lib/db';
-import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion } from '../../../types';
+import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico } from '../../../types';
 
 export default function PlanosIngenieriaPage() {
   const [areas, setAreas] = useState<Area[]>([]);
   const [planos, setPlanos] = useState<Plano[]>([]);
   const [zonas, setZonas] = useState<ZonaInspeccion[]>([]);
   const [elementos, setElementos] = useState<Elemento[]>([]);
+  const [hitos, setHitos] = useState<HitoGeografico[]>([]);
   const [inspecciones, setInspecciones] = useState<Inspeccion[]>([]);
 
   const [selectedAreaId, setSelectedAreaId] = useState<string>('');
   const [selectedPlanoId, setSelectedPlanoId] = useState<string>('');
   const [selectedZona, setSelectedZona] = useState<ZonaInspeccion | undefined>(undefined);
   const [selectedElemento, setSelectedElemento] = useState<Elemento | undefined>(undefined);
+  const [selectedHito, setSelectedHito] = useState<HitoGeografico | undefined>(undefined);
 
-  // Modos de interacción: 'inspect' | 'add_pin' | 'add_zone'
-  const [activeMode, setActiveMode] = useState<'inspect' | 'add_pin' | 'add_zone'>('inspect');
+  // Modos de interacción: 'inspect' | 'add_pin' | 'add_zone' | 'add_hito'
+  const [activeMode, setActiveMode] = useState<'inspect' | 'add_pin' | 'add_zone' | 'add_hito'>('inspect');
   const [customPolygonPoints, setCustomPolygonPoints] = useState<{ x: number; y: number }[] | undefined>(undefined);
   const [isEditingZonePolygon, setIsEditingZonePolygon] = useState<boolean>(false);
 
@@ -65,6 +68,8 @@ export default function PlanosIngenieriaPage() {
   const [isReplacePlanModalOpen, setIsReplacePlanModalOpen] = useState<boolean>(false);
   const [isCreateElementModalOpen, setIsCreateElementModalOpen] = useState<boolean>(false);
   const [pendingPinCoords, setPendingPinCoords] = useState<{ x: number; y: number } | null>(null);
+  const [isCreateHitoModalOpen, setIsCreateHitoModalOpen] = useState<boolean>(false);
+  const [pendingHitoCoords, setPendingHitoCoords] = useState<{ x: number; y: number } | null>(null);
   const [isQRModalOpen, setIsQRModalOpen] = useState<boolean>(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
   const [isHitosModalOpen, setIsHitosModalOpen] = useState<boolean>(false);
@@ -83,6 +88,7 @@ export default function PlanosIngenieriaPage() {
     let loadedPlanos = await db.planos.toArray();
     let loadedZonas = await db.zonas.toArray();
     let loadedElementos = await db.elementos.toArray();
+    let loadedHitos = await db.hitos.toArray();
     let loadedInspecciones = await db.inspecciones.toArray();
 
     // Si el almacenamiento local del dispositivo está vacío, hidratar desde Neon Cloud
@@ -101,6 +107,7 @@ export default function PlanosIngenieriaPage() {
           loadedPlanos = await db.planos.toArray();
           loadedZonas = await db.zonas.toArray();
           loadedElementos = await db.elementos.toArray();
+          loadedHitos = await db.hitos.toArray();
           loadedInspecciones = await db.inspecciones.toArray();
         }
       } catch (err) {
@@ -112,6 +119,7 @@ export default function PlanosIngenieriaPage() {
     setPlanos(loadedPlanos);
     setZonas(loadedZonas);
     setElementos(loadedElementos);
+    setHitos(loadedHitos);
     setInspecciones(loadedInspecciones);
 
     if (loadedAreas.length > 0 && (!selectedAreaId || !loadedAreas.some(a => a.id === selectedAreaId))) {
@@ -129,6 +137,7 @@ export default function PlanosIngenieriaPage() {
 
   const currentArea = areas.find(a => a.id === selectedAreaId);
   const currentPlano = planos.find(p => p.id === selectedPlanoId);
+  const hitosPlano = hitos.filter(h => currentPlano ? (!h.plano_id || h.plano_id === currentPlano.id) : true);
   const zonasPlano = zonas.filter(z => currentPlano ? z.plano_id === currentPlano.id : true);
   const elementosPlano = elementos.filter(e => {
     const zona = zonas.find(z => z.id === e.zona_id);
@@ -162,6 +171,14 @@ export default function PlanosIngenieriaPage() {
       setPendingPinCoords(coords);
       setIsCreateElementModalOpen(true);
       setActiveMode('inspect');
+      return;
+    }
+
+    if (activeMode === 'add_hito') {
+      setPendingHitoCoords(coords);
+      setIsCreateHitoModalOpen(true);
+      setActiveMode('inspect');
+      return;
     }
   };
 
@@ -504,12 +521,19 @@ export default function PlanosIngenieriaPage() {
           plano={currentPlano}
           zonas={zonasFiltradas}
           elementos={elementosFiltrados}
+          hitos={hitosPlano}
           selectedZonaId={selectedZona?.id}
           selectedElementoId={selectedElemento?.id}
+          selectedHitoId={selectedHito?.id}
           activeMode={activeMode}
           onChangeMode={(mode) => setActiveMode(mode)}
           onSelectZona={handleSelectZona}
           onSelectElemento={handleSelectElemento}
+          onSelectHito={(h) => {
+            setSelectedHito(h);
+            setNotification(`Hito GPS "${h.codigo}": ${h.lat}, ${h.lng} (${h.nombre})`);
+            setTimeout(() => setNotification(null), 4000);
+          }}
           onMapClick={handleMapClick}
           onOpenUploadModal={() => setIsUploadPlanModalOpen(true)}
           onPlanUpdated={() => reloadFromDB()}
@@ -608,6 +632,24 @@ export default function PlanosIngenieriaPage() {
           setCustomPolygonPoints(undefined);
           setNotification(`Zona "${newZone.codigo}" creada.`);
           setTimeout(() => setNotification(null), 3000);
+        }}
+      />
+
+      <CreateHitoModal
+        isOpen={isCreateHitoModalOpen}
+        onClose={() => {
+          setIsCreateHitoModalOpen(false);
+          setPendingHitoCoords(null);
+        }}
+        coordinates={pendingHitoCoords}
+        currentPlano={currentPlano}
+        onHitoCreated={(newHito) => {
+          reloadFromDB();
+          setSelectedHito(newHito);
+          setIsCreateHitoModalOpen(false);
+          setPendingHitoCoords(null);
+          setNotification(`Hito Geográfico "${newHito.codigo}" georreferenciado en el plano.`);
+          setTimeout(() => setNotification(null), 4000);
         }}
       />
 

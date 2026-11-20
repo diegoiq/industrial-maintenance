@@ -18,9 +18,11 @@ import {
   Maximize2,
   Minimize2,
   Tag,
-  MousePointer
+  MousePointer,
+  Compass,
+  Navigation
 } from 'lucide-react';
-import { Plano, ZonaInspeccion, Elemento, EstadoSemaforo } from '../../types';
+import { Plano, ZonaInspeccion, Elemento, EstadoSemaforo, HitoGeografico } from '../../types';
 import { convertPdfPageToImage, rotateImageDataUrl } from '../../lib/pdfRenderer';
 import { db } from '../../lib/db';
 
@@ -28,13 +30,16 @@ interface InteractivePlantMapProps {
   plano?: Plano;
   zonas: ZonaInspeccion[];
   elementos: Elemento[];
+  hitos?: HitoGeografico[];
   selectedZonaId?: string;
   selectedElementoId?: string;
-  activeMode?: 'inspect' | 'add_pin' | 'add_zone';
-  onChangeMode?: (mode: 'inspect' | 'add_pin' | 'add_zone') => void;
+  selectedHitoId?: string;
+  activeMode?: 'inspect' | 'add_pin' | 'add_zone' | 'add_hito';
+  onChangeMode?: (mode: 'inspect' | 'add_pin' | 'add_zone' | 'add_hito') => void;
   isEditingPolygon?: boolean;
   onSelectZona: (zona: ZonaInspeccion) => void;
   onSelectElemento: (elemento: Elemento) => void;
+  onSelectHito?: (hito: HitoGeografico) => void;
   onMapClick?: (coords: { x: number; y: number }) => void;
   onOpenUploadModal?: () => void;
   onPlanUpdated?: (updatedPlano: Plano) => void;
@@ -47,13 +52,16 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
   plano,
   zonas,
   elementos,
+  hitos = [],
   selectedZonaId,
   selectedElementoId,
+  selectedHitoId,
   activeMode = 'inspect',
   onChangeMode,
   isEditingPolygon = false,
   onSelectZona,
   onSelectElemento,
+  onSelectHito,
   onMapClick,
   onOpenUploadModal,
   onPlanUpdated,
@@ -63,6 +71,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
 }) => {
   const [showZonasLayer, setShowZonasLayer] = useState(true);
   const [showPinsLayer, setShowPinsLayer] = useState(true);
+  const [showHitosLayer, setShowHitosLayer] = useState(true);
   const [useShortTags, setUseShortTags] = useState(true);
   const [isZenMode, setIsZenMode] = useState(false);
   const [resolvedImageUrl, setResolvedImageUrl] = useState<string | null>(plano?.archivo_data_url || plano?.archivo_original_url || null);
@@ -196,7 +205,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     const coords = getSvgCoordinates(e);
     if (!coords) return;
 
-    if (activeMode === 'add_pin') {
+    if (activeMode === 'add_pin' || activeMode === 'add_hito') {
       if (onMapClick) onMapClick(coords);
       return;
     }
@@ -315,6 +324,35 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         </div>
       )}
 
+      {/* Indicador de Modo Activo arriba-centro */}
+      {activeMode === 'add_hito' && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-2 bg-emerald-950/95 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-emerald-500 shadow-xl text-xs text-white animate-in fade-in slide-in-from-top-1">
+          <Compass className="w-4 h-4 text-emerald-400 animate-spin" />
+          <span className="font-bold">Haz clic en el punto exacto del plano para fijar el Hito Geográfico (GPS)</span>
+          <button
+            type="button"
+            onClick={() => onChangeMode && onChangeMode('inspect')}
+            className="ml-2 px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full text-[10px]"
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
+
+      {activeMode === 'add_pin' && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-2 bg-amber-950/95 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-amber-500 shadow-xl text-xs text-white">
+          <Crosshair className="w-4 h-4 text-amber-400" />
+          <span className="font-bold">Haz clic en el plano para colocar un nuevo Pin de Activo físico</span>
+          <button
+            type="button"
+            onClick={() => onChangeMode && onChangeMode('inspect')}
+            className="ml-2 px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full text-[10px]"
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
+
       {/* Barra de Trazado de Nueva Zona */}
       {activeMode === 'add_zone' && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-2 bg-slate-900/95 backdrop-blur-md px-3 py-1.5 rounded-full border border-sky-500 shadow-xl text-xs text-white">
@@ -401,6 +439,17 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
           <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="hidden sm:inline">Pines</span>
           <span className="font-mono text-[10px] font-bold">({elementos.length})</span>
+        </button>
+
+        {/* Capa de Hitos Geográficos GPS */}
+        <button
+          onClick={() => setShowHitosLayer(!showHitosLayer)}
+          className={`flex items-center space-x-1 px-2 py-1 rounded ${showHitosLayer ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'text-slate-400 hover:bg-slate-800'}`}
+          title="Alternar visibilidad de Hitos Geográficos (GPS)"
+        >
+          <Compass className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="hidden sm:inline">GPS</span>
+          <span className="font-mono text-[10px] font-bold">({hitos.length})</span>
         </button>
 
         {/* Toggle para etiquetas Cortas / Completas */}
@@ -544,7 +593,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       {plano.titulo}
                     </text>
                     <text x="140" y="200" fill="#64748b" fontSize="16" fontFamily="monospace">
-                      Usa el dock inferior para colocar pines o crear zonas de inspección.
+                      Usa el dock inferior para colocar pines, zonas o hitos GPS en este plano.
                     </text>
                   </g>
                 )}
@@ -560,7 +609,6 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   const minY = Math.min(...pts.map(p => p.y));
                   const tagScale = Math.min(1.3, Math.max(0.9, vbWidth / 7000));
                   
-                  // ID de indicación mínimo y corto o nombre completo según toggle
                   const tagText = useShortTags 
                     ? (zona.codigo || 'Z').trim().toUpperCase()
                     : `${(zona.codigo || 'Z').trim().toUpperCase()} - ${zona.nombre}`;
@@ -612,7 +660,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                         </text>
                       </g>
 
-                      {/* VÉRTICES INTERACTIVOS DE AJUSTE (ÚNICAMENTE SI ESTÁ SELECCIONADA Y EN MODO EDICIÓN HABILITADO) */}
+                      {/* VÉRTICES INTERACTIVOS DE AJUSTE */}
                       {isSelected && isEditingPolygon && pts.map((p, idx) => (
                         <g
                           key={`vertex-${zona.id}-${idx}`}
@@ -788,13 +836,99 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                     </g>
                   );
                 })}
+
+                {/* CAPA 3: Hitos Geográficos y Puntos de Referencia GPS */}
+                {showHitosLayer && hitos.filter(h => h.coordenadas_plano).map((hito) => {
+                  const isSelected = selectedHitoId === hito.id;
+                  const x = hito.coordenadas_plano!.x;
+                  const y = hito.coordenadas_plano!.y;
+
+                  return (
+                    <g
+                      key={hito.id}
+                      className="cursor-pointer group"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onSelectHito) onSelectHito(hito);
+                      }}
+                      filter="url(#pin-shadow)"
+                    >
+                      {/* Mira de Georreferenciación (Crosshair GPS) */}
+                      <circle
+                        cx={x}
+                        cy={y}
+                        r={16 * scaleFactor}
+                        fill="transparent"
+                        stroke="#10b981"
+                        strokeWidth={1.2 * scaleFactor}
+                        strokeDasharray="3,3"
+                        className="animate-spin"
+                        style={{ animationDuration: '10s' }}
+                      />
+                      <line x1={x - 20 * scaleFactor} y1={y} x2={x + 20 * scaleFactor} y2={y} stroke="#10b981" strokeWidth={1 * scaleFactor} opacity="0.6" />
+                      <line x1={x} y1={y - 20 * scaleFactor} x2={x} y2={y + 20 * scaleFactor} stroke="#10b981" strokeWidth={1 * scaleFactor} opacity="0.6" />
+
+                      {/* Pin Central Hito */}
+                      <circle
+                        cx={x}
+                        cy={y}
+                        r={isSelected ? 11 * scaleFactor : 8 * scaleFactor}
+                        fill="#059669"
+                        stroke="#ffffff"
+                        strokeWidth={2 * scaleFactor}
+                        className="transition-all group-hover:scale-125"
+                      />
+                      <circle
+                        cx={x}
+                        cy={y}
+                        r={3 * scaleFactor}
+                        fill="#ffffff"
+                      />
+
+                      {/* Etiqueta de Coordenadas GPS */}
+                      <g transform={`translate(${x}, ${y - 18 * scaleFactor})`} className="opacity-95 group-hover:opacity-100">
+                        <rect
+                          x={-45 * scaleFactor}
+                          y={-18 * scaleFactor}
+                          width={90 * scaleFactor}
+                          height={18 * scaleFactor}
+                          rx={4}
+                          fill="#064e3b"
+                          stroke={isSelected ? '#34d399' : '#10b981'}
+                          strokeWidth={1.2}
+                        />
+                        <text
+                          x="0"
+                          y={-10 * scaleFactor}
+                          fill="#a7f3d0"
+                          fontSize={8.5 * scaleFactor}
+                          fontFamily="monospace"
+                          fontWeight="bold"
+                          textAnchor="middle"
+                        >
+                          🌐 {hito.codigo}
+                        </text>
+                        <text
+                          x="0"
+                          y={-2 * scaleFactor}
+                          fill="#6ee7b7"
+                          fontSize={6.5 * scaleFactor}
+                          fontFamily="monospace"
+                          textAnchor="middle"
+                        >
+                          {hito.lat.toFixed(5)}, {hito.lng.toFixed(5)}
+                        </text>
+                      </g>
+                    </g>
+                  );
+                })}
               </svg>
             </TransformComponent>
           </>
         )}
       </TransformWrapper>
 
-      {/* DOCK FLOTANTE INFERIOR: Modos de Interacción (Inspeccionar | + Pin | + Zona) */}
+      {/* DOCK FLOTANTE INFERIOR: Modos de Interacción (Inspeccionar | + Pin | + Zona | + Hito GPS) */}
       <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center space-x-1 sm:space-x-1.5 bg-slate-900/95 backdrop-blur-md px-2 py-1.5 rounded-xl border border-slate-700/80 shadow-2xl text-xs">
         <button
           type="button"
@@ -836,6 +970,20 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         >
           <Layers className="w-3.5 h-3.5" />
           <span>+ Zona</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onChangeMode && onChangeMode('add_hito')}
+          className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg font-bold transition ${
+            activeMode === 'add_hito'
+              ? 'bg-emerald-500 text-black shadow-sm'
+              : 'text-emerald-400 hover:text-emerald-300 hover:bg-slate-800/60'
+          }`}
+          title="Hacer clic en el plano para georreferenciar un Hito GPS"
+        >
+          <Compass className="w-3.5 h-3.5" />
+          <span>+ Hito GPS</span>
         </button>
       </div>
     </div>
