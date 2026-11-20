@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.2.1",
     "browser-image-compression": "^2.0.2",
     "clsx": "^2.1.1",
     "dexie": "^4.0.8",
