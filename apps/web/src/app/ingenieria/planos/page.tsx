@@ -14,7 +14,8 @@ import {
   RefreshCw, 
   CloudUpload,
   MoreVertical,
-  Plus
+  Plus,
+  HardDrive
 } from 'lucide-react';
 import { InteractivePlantMap } from '../../../components/ingenieria/InteractivePlantMap';
 import { ZoneDrawer } from '../../../components/ingenieria/ZoneDrawer';
@@ -27,9 +28,16 @@ import { EditZoneModal } from '../../../components/ingenieria/EditZoneModal';
 import { CreateHitoModal } from '../../../components/ingenieria/CreateHitoModal';
 import { ReporteRelevamientoModal } from '../../../components/campo/ReporteRelevamientoModal';
 import { HitosMapsModal } from '../../../components/ingenieria/HitosMapsModal';
+import { SyncComparatorModal } from '../../../components/ingenieria/SyncComparatorModal';
 import { db } from '../../../lib/db';
 import { getSyncRequestHeaders } from '../../../lib/security';
-import { pushFastSyncToCloud, deleteFromCloud, pullAndReconcileFromCloud } from '../../../lib/cloudSync';
+import {
+  pushFastSyncToCloud,
+  deleteFromCloud,
+  pullAndReconcileFromCloud,
+  markLocalEntityPendingPush,
+  smartEdgeHeartbeatSync
+} from '../../../lib/cloudSync';
 import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico } from '../../../types';
 
 export default function PlanosIngenieriaPage() {
@@ -75,6 +83,7 @@ export default function PlanosIngenieriaPage() {
   const [isQRModalOpen, setIsQRModalOpen] = useState<boolean>(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
   const [isHitosModalOpen, setIsHitosModalOpen] = useState<boolean>(false);
+  const [isSyncComparatorOpen, setIsSyncComparatorOpen] = useState<boolean>(false);
   const [isCreateZoneModalOpen, setIsCreateZoneModalOpen] = useState<boolean>(false);
   const [isEditZoneModalOpen, setIsEditZoneModalOpen] = useState<boolean>(false);
   const [zoneToEdit, setZoneToEdit] = useState<ZonaInspeccion | undefined>(undefined);
@@ -146,7 +155,31 @@ export default function PlanosIngenieriaPage() {
   };
 
   useEffect(() => {
-    reloadFromDB();
+    reloadFromDB().then(() => {
+      // Al entrar, comparar manifiesto ligero (~500 bytes) y traer solo deltas si la nube tiene cambios
+      smartEdgeHeartbeatSync().then(res => {
+        if (res.changed) reloadFromDB();
+      });
+    });
+
+    // Polling inteligente cada 7 segundos en el borde (solo consulta ~500 bytes si la pantalla está activa)
+    const interval = setInterval(() => {
+      smartEdgeHeartbeatSync().then(res => {
+        if (res.changed) reloadFromDB();
+      });
+    }, 7000);
+
+    const onFocus = () => {
+      smartEdgeHeartbeatSync().then(res => {
+        if (res.changed) reloadFromDB();
+      });
+    };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   const currentArea = areas.find(a => a.id === selectedAreaId);
@@ -208,6 +241,7 @@ export default function PlanosIngenieriaPage() {
       ...target,
       poligono_svg: { puntos }
     };
+    markLocalEntityPendingPush('zona', zonaId);
     await db.zonas.put(updated);
     setZonas(prev => prev.map(z => z.id === zonaId ? updated : z));
     if (selectedZona?.id === zonaId) {
@@ -256,6 +290,7 @@ export default function PlanosIngenieriaPage() {
   };
 
   const handleZoneUpdated = async (updatedZone: ZonaInspeccion) => {
+    markLocalEntityPendingPush('zona', updatedZone.id);
     await db.zonas.put(updatedZone);
     setZonas(prev => prev.map(z => z.id === updatedZone.id ? updatedZone : z));
     if (selectedZona?.id === updatedZone.id) {
@@ -432,8 +467,19 @@ export default function PlanosIngenieriaPage() {
           </select>
         </div>
 
-        {/* Lado Derecho: Sync Nube, Subir Plano y Menú de Gestión */}
+        {/* Lado Derecho: Comparador Caché vs Nube, Sync Nube, Subir Plano y Menú de Gestión */}
         <div className="flex items-center space-x-1.5 flex-shrink-0">
+          {/* Botón Comparador Caché Local vs. Nube */}
+          <button
+            type="button"
+            onClick={() => setIsSyncComparatorOpen(true)}
+            className="flex items-center space-x-1 px-2 py-1 bg-slate-950 hover:bg-slate-800 border border-indigo-500/50 text-indigo-300 font-mono font-bold text-[11px] rounded-md transition"
+            title="Comparar qué hay en la Caché Local de este equipo vs. Base de Datos Neon e Imágenes"
+          >
+            <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden lg:inline">Caché ({zonasPlano.length}Z)</span>
+          </button>
+
           {/* Botón Sincronizar Nube */}
           <button
             type="button"
@@ -651,6 +697,7 @@ export default function PlanosIngenieriaPage() {
         currentPlanoId={selectedPlanoId}
         defaultPoints={customPolygonPoints}
         onZoneCreated={(newZone) => {
+          markLocalEntityPendingPush('zona', newZone.id);
           reloadFromDB();
           setSelectedZona(newZone);
           setIsCreateZoneModalOpen(false);
@@ -670,6 +717,7 @@ export default function PlanosIngenieriaPage() {
         coordinates={pendingHitoCoords}
         currentPlano={currentPlano}
         onHitoCreated={(newHito) => {
+          markLocalEntityPendingPush('hito', newHito.id);
           reloadFromDB();
           setSelectedHito(newHito);
           setIsCreateHitoModalOpen(false);
@@ -711,6 +759,12 @@ export default function PlanosIngenieriaPage() {
         isOpen={isHitosModalOpen}
         onClose={() => setIsHitosModalOpen(false)}
         currentPlano={currentPlano}
+      />
+
+      <SyncComparatorModal
+        isOpen={isSyncComparatorOpen}
+        onClose={() => setIsSyncComparatorOpen(false)}
+        onSyncCompleted={() => reloadFromDB()}
       />
     </div>
   );

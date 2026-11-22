@@ -95,7 +95,72 @@ export async function GET(req: NextRequest) {
 
   try {
     await ensureExtendedSchema();
+    const mode = req.nextUrl.searchParams.get('mode');
     const isLight = req.nextUrl.searchParams.get('light') === '1';
+
+    // MODO MANIFEST (~500 bytes): Consulta ultra-liviana para comparar Caché Local vs. Nube cada 7s
+    // sin transferir megabytes de planos CAD, SVGs ni fotografías base64.
+    if (mode === 'manifest') {
+      const areas = await sql`SELECT id, codigo, nombre FROM public.areas ORDER BY codigo`;
+      const planos = await sql`
+        SELECT id, area_id, titulo, version, tipo_plano,
+               (archivo_original_url IS NOT NULL) AS has_b2_url,
+               (svg_content IS NOT NULL OR archivo_data_url IS NOT NULL OR archivo_original_url IS NOT NULL) AS has_image,
+               COALESCE(LENGTH(svg_content), LENGTH(archivo_data_url), 0) AS payload_bytes,
+               georeferencia
+        FROM public.planos
+        ORDER BY created_at DESC
+      `;
+      const zonas = await sql`
+        SELECT id, plano_id, codigo, nombre, cota_nivel, estado_salud_apriori, superficie_estimada_m2
+        FROM public.zonas_inspeccion
+        ORDER BY codigo
+      `;
+      const elementos = await sql`
+        SELECT id, zona_id, tag_codigo, tipo_elemento, estado_actual
+        FROM public.elementos
+        ORDER BY tag_codigo
+      `;
+      const hitos = await sql`
+        SELECT id, codigo, nombre, lat, lng
+        FROM public.hitos_geograficos
+        ORDER BY created_at DESC
+      `;
+      const inspecciones = await sql`
+        SELECT id, zona_id, zona_codigo, elemento_id, grado_corrosion, fecha_inspeccion,
+               jsonb_array_length(COALESCE(fotos_json, '[]'::jsonb)) AS fotos_count
+        FROM public.inspecciones
+        ORDER BY fecha_inspeccion DESC
+      `;
+
+      const totalFotosCloud = inspecciones.reduce(
+        (acc: number, row: any) => acc + Number(row.fotos_count || 0),
+        0
+      );
+
+      return NextResponse.json({
+        success: true,
+        mode: 'manifest',
+        timestamp: new Date().toISOString(),
+        manifest: {
+          areas,
+          planos,
+          zonas,
+          elementos,
+          hitos,
+          inspecciones,
+          counts: {
+            areas: areas.length,
+            planos: planos.length,
+            zonas: zonas.length,
+            elementos: elementos.length,
+            hitos: hitos.length,
+            inspecciones: inspecciones.length,
+            fotos: totalFotosCloud
+          }
+        }
+      });
+    }
 
     const areas = await sql`SELECT * FROM public.areas ORDER BY codigo`;
     const planos = isLight

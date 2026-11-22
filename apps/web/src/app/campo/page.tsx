@@ -30,10 +30,16 @@ import {
   Info,
   Play,
   Square,
-  LogOut
+  LogOut,
+  HardDrive
 } from 'lucide-react';
 import { db } from '../../lib/db';
-import { pullAndReconcileFromCloud, pushFastSyncToCloud } from '../../lib/cloudSync';
+import {
+  pullAndReconcileFromCloud,
+  pushFastSyncToCloud,
+  smartEdgeHeartbeatSync,
+  markLocalEntityPendingPush
+} from '../../lib/cloudSync';
 import { getSyncRequestHeaders, sanitizeSvgContent } from '../../lib/security';
 import { compressInspectionPhoto } from '../../lib/imageCompression';
 import { syncManager } from '../../lib/syncManager';
@@ -42,6 +48,7 @@ import { VectorAnnotationCanvas } from '../../components/campo/VectorAnnotationC
 import { QRScannerModal } from '../../components/campo/QRScannerModal';
 import { ReporteRelevamientoModal } from '../../components/campo/ReporteRelevamientoModal';
 import { AjustarZonaCampoModal } from '../../components/campo/AjustarZonaCampoModal';
+import { SyncComparatorModal } from '../../components/ingenieria/SyncComparatorModal';
 import { 
   getOrInitGeoreferencia, 
   latLngToPixel, 
@@ -139,6 +146,7 @@ export default function CampoPage() {
 
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
   const [isAjustarZonaModalOpen, setIsAjustarZonaModalOpen] = useState(false);
+  const [isSyncComparatorOpen, setIsSyncComparatorOpen] = useState(false);
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const [viewMode, setViewMode] = useState<'zonas' | 'mapa'>('zonas');
@@ -261,18 +269,26 @@ export default function CampoPage() {
   };
 
   useEffect(() => {
-    loadAndHydrateFieldData(true);
+    // 1. Carga inmediata desde Caché Local (IndexedDB en el borde: 0 ms)
+    // y en segundo plano compara manifiesto (~500 bytes) para bajar solo lo que falte
+    loadAndHydrateFieldData(false).then(() => {
+      smartEdgeHeartbeatSync().then(res => {
+        if (res.changed) loadAndHydrateFieldData(false);
+      });
+    });
 
-    // Auto-reconciliar cada vez que el inspector vuelve a la pantalla del celular o cada 10s
-    const onFocus = () => loadAndHydrateFieldData(true);
+    // 2. Smart Polling cada 7 segundos usando manifiesto ultraligero (~500 bytes, no descarga imágenes si ya están en caché)
+    const onFocus = () => {
+      smartEdgeHeartbeatSync().then(res => {
+        if (res.changed) loadAndHydrateFieldData(false);
+      });
+    };
     window.addEventListener('focus', onFocus);
     const interval = setInterval(() => {
-      if (typeof navigator !== 'undefined' && navigator.onLine) {
-        pullAndReconcileFromCloud().then(ok => {
-          if (ok) loadAndHydrateFieldData(false);
-        });
-      }
-    }, 10000);
+      smartEdgeHeartbeatSync().then(res => {
+        if (res.changed) loadAndHydrateFieldData(false);
+      });
+    }, 7000);
 
     return () => {
       window.removeEventListener('focus', onFocus);
@@ -726,6 +742,16 @@ export default function CampoPage() {
         </div>
 
         <div className="flex items-center space-x-1.5">
+          <button
+            type="button"
+            onClick={() => setIsSyncComparatorOpen(true)}
+            className="flex items-center space-x-1 px-2 py-1.5 bg-slate-950 hover:bg-slate-800 border border-indigo-500/50 text-indigo-300 font-mono font-bold text-[11px] rounded-lg transition"
+            title="Comparar Caché Local del Celular vs. Nube"
+          >
+            <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Caché</span>
+          </button>
+
           <button
             type="button"
             onClick={handleFullCloudSync}
@@ -1843,10 +1869,19 @@ export default function CampoPage() {
           const fresh = await db.zonas.toArray();
           setZonas(fresh);
           if (selectedZona) {
+            markLocalEntityPendingPush('zona', selectedZona.id);
             const updated = fresh.find(z => z.id === selectedZona.id);
             if (updated) setSelectedZona(updated);
           }
+          pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: false, authoritativeHitos: false });
         }}
+      />
+
+      {/* Comparador Caché Local vs. Nube */}
+      <SyncComparatorModal
+        isOpen={isSyncComparatorOpen}
+        onClose={() => setIsSyncComparatorOpen(false)}
+        onSyncCompleted={() => loadAndHydrateFieldData(false)}
       />
     </div>
   );
