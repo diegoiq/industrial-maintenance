@@ -172,6 +172,11 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                   {zona.codigo}
                 </span>
               )}
+              {zona?.area_planta && (
+                <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/40 text-[10px] font-bold">
+                  {zona.area_planta}
+                </span>
+              )}
             </div>
             <h3 className="text-base font-bold text-white leading-tight mt-1">
               {elemento ? elemento.tag_codigo : zona?.nombre}

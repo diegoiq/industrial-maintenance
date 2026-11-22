@@ -176,8 +176,9 @@ export default function CampoPage() {
   const [nuevoElementoCivilCustom, setNuevoElementoCivilCustom] = useState('');
   const [notasCiviles, setNotasCiviles] = useState('');
 
-  // Filtro de Cota y Modal de Reportar Hallazgo / Elemento o Hito dentro de la Zona
+  // Filtro de Cota, Área de Planta y Modal de Reportar Hallazgo
   const [cotaFiltro, setCotaFiltro] = useState<string>('todos');
+  const [areaFiltro, setAreaFiltro] = useState<string>('todos');
   const [isFieldPinModalOpen, setIsFieldPinModalOpen] = useState(false);
   const [fieldTag, setFieldTag] = useState('');
   const [fieldDisciplina, setFieldDisciplina] = useState<TipoElemento>('acero_estructural');
@@ -305,7 +306,21 @@ export default function CampoPage() {
   const currentPlano = planos.find(p => p.id === selectedPlanoId) || planos[0];
   const geoCal = getOrInitGeoreferencia(currentPlano, hitos);
   const zonasDelPlano = zonas.filter(z => (currentPlano ? z.plano_id === currentPlano.id : true));
-  const zonasFiltradas = zonasDelPlano.filter(z => cotaFiltro === 'todos' || String(z.cota_nivel || 146000) === cotaFiltro);
+  const areasDisponibles = Array.from(
+    new Set(zonasDelPlano.map(z => (z.area_planta || 'Sin Área Asignada').trim()))
+  ).sort();
+  const zonasFiltradas = zonasDelPlano.filter(z => {
+    const matchCota = cotaFiltro === 'todos' || String(z.cota_nivel || 146000) === cotaFiltro;
+    const areaName = (z.area_planta || 'Sin Área Asignada').trim();
+    const matchArea = areaFiltro === 'todos' || areaName === areaFiltro;
+    return matchCota && matchArea;
+  });
+  const zonasPorAreaMap = zonasFiltradas.reduce<Record<string, ZonaInspeccion[]>>((acc, z) => {
+    const key = (z.area_planta || 'Sin Área Asignada').trim();
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(z);
+    return acc;
+  }, {});
   const elementosDeZona = selectedZona ? elementos.filter(e => e.zona_id === selectedZona.id) : [];
 
   // Seleccionar una Zona para iniciar el recorrido en campo
@@ -889,12 +904,47 @@ export default function CampoPage() {
           </div>
           {gpsError && <p className="text-[11px] text-amber-400">{gpsError}</p>}
 
-          {/* VISTA A: LISTA DE LAS ZONAS CARGADAS */}
+          {/* Filtro Rápido por Área de Planta (ej. Efluentes, Blanqueo, Caustificación...) */}
+          {areasDisponibles.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px]">
+              <span className="text-slate-400 font-bold flex-shrink-0">🏭 Área:</span>
+              <button
+                type="button"
+                onClick={() => setAreaFiltro('todos')}
+                className={`px-2.5 py-1 rounded-full font-bold flex-shrink-0 border transition ${
+                  areaFiltro === 'todos'
+                    ? 'bg-emerald-500 text-black border-emerald-400'
+                    : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600'
+                }`}
+              >
+                Todas ({zonasDelPlano.length})
+              </button>
+              {areasDisponibles.map(areaName => {
+                const count = zonasDelPlano.filter(z => (z.area_planta || 'Sin Área Asignada').trim() === areaName).length;
+                return (
+                  <button
+                    key={areaName}
+                    type="button"
+                    onClick={() => setAreaFiltro(areaName)}
+                    className={`px-2.5 py-1 rounded-full font-bold flex-shrink-0 border transition ${
+                      areaFiltro === areaName
+                        ? 'bg-emerald-500 text-black border-emerald-400'
+                        : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600'
+                    }`}
+                  >
+                    {areaName} ({count})
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* VISTA A: LISTA DE LAS ZONAS AGRUPADAS POR ÁREA DE PLANTA */}
           {viewMode === 'zonas' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="space-y-3">
               {zonasFiltradas.length === 0 ? (
-                <div className="col-span-2 p-4 bg-slate-950 rounded-xl border border-slate-800 text-center space-y-2 text-xs text-slate-400">
-                  <p>No se encontraron zonas en la memoria local.</p>
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 text-center space-y-2 text-xs text-slate-400">
+                  <p>No se encontraron zonas para el filtro seleccionado.</p>
                   <button
                     type="button"
                     onClick={handleFullCloudSync}
@@ -904,50 +954,72 @@ export default function CampoPage() {
                   </button>
                 </div>
               ) : (
-                zonasFiltradas.map((z) => {
-                  const isSelected = selectedZona?.id === z.id;
-                  const inspZonaCount = inspeccionesLocales.filter(
-                    i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`
+                Object.entries(zonasPorAreaMap).map(([areaName, zonasGrupo]) => {
+                  const relevadasEnArea = zonasGrupo.filter(z =>
+                    inspeccionesLocales.some(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`)
                   ).length;
-                  const elemsZonaCount = elementos.filter(e => e.zona_id === z.id).length;
-                  const areaM2 = z.superficie_estimada_m2 || calculatePolygonAreaM2(z.poligono_svg?.puntos || [], geoCal);
 
                   return (
-                    <button
-                      key={z.id}
-                      type="button"
-                      onClick={() => handleSelectZonaForTour(z)}
-                      className={`text-left p-3 rounded-xl border transition flex flex-col justify-between ${
-                        isSelected
-                          ? 'bg-sky-950/80 border-sky-400 ring-1 ring-sky-400 shadow-lg'
-                          : 'bg-slate-950/90 border-slate-800 hover:border-slate-700'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="font-mono font-black text-xs text-sky-400 truncate">
-                            {z.codigo}
-                          </span>
-                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
-                            z.estado_salud_apriori === 'critico' ? 'bg-red-950 text-red-300 border border-red-700' :
-                            z.estado_salud_apriori === 'malo' ? 'bg-orange-950 text-orange-300 border border-orange-700' :
-                            z.estado_salud_apriori === 'bueno' ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' :
-                            'bg-amber-950 text-amber-300 border border-amber-700'
-                          }`}>
-                            {z.estado_salud_apriori || 'Regular'}
-                          </span>
-                        </div>
-                        <p className="text-xs font-semibold text-white mt-1 line-clamp-2">
-                          {z.nombre}
-                        </p>
+                    <div key={areaName} className="space-y-2">
+                      <div className="flex items-center justify-between px-2 py-1 bg-slate-950/90 border border-slate-800 rounded-lg text-[11px]">
+                        <span className="font-black text-emerald-400 uppercase tracking-wide flex items-center space-x-1.5">
+                          <Building2 className="w-3.5 h-3.5" />
+                          <span>{areaName}</span>
+                        </span>
+                        <span className="font-mono text-slate-300 font-bold">
+                          {relevadasEnArea}/{zonasGrupo.length} relevadas
+                        </span>
                       </div>
 
-                      <div className="flex items-center justify-between text-[10px] text-slate-400 mt-2.5 pt-2 border-t border-slate-800/80 font-mono">
-                        <span>📐 {areaM2} m²</span>
-                        <span>📍 {elemsZonaCount} hallazgos</span>
-                        <span className="text-emerald-400 font-bold">📸 {inspZonaCount} insp.</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {zonasGrupo.map((z) => {
+                          const isSelected = selectedZona?.id === z.id;
+                          const inspZonaCount = inspeccionesLocales.filter(
+                            i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`
+                          ).length;
+                          const elemsZonaCount = elementos.filter(e => e.zona_id === z.id).length;
+                          const areaM2 = z.superficie_estimada_m2 || calculatePolygonAreaM2(z.poligono_svg?.puntos || [], geoCal);
+
+                          return (
+                            <button
+                              key={z.id}
+                              type="button"
+                              onClick={() => handleSelectZonaForTour(z)}
+                              className={`text-left p-3 rounded-xl border transition flex flex-col justify-between ${
+                                isSelected
+                                  ? 'bg-sky-950/80 border-sky-400 ring-1 ring-sky-400 shadow-lg'
+                                  : 'bg-slate-950/90 border-slate-800 hover:border-slate-700'
+                              }`}
+                            >
+                              <div>
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="font-mono font-black text-xs text-sky-400 truncate">
+                                    {z.codigo}
+                                  </span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+                                    z.estado_salud_apriori === 'critico' ? 'bg-red-950 text-red-300 border border-red-700' :
+                                    z.estado_salud_apriori === 'malo' ? 'bg-orange-950 text-orange-300 border border-orange-700' :
+                                    z.estado_salud_apriori === 'bueno' ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' :
+                                    'bg-amber-950 text-amber-300 border border-amber-700'
+                                  }`}>
+                                    {z.estado_salud_apriori || 'Regular'}
+                                  </span>
+                                </div>
+                                <p className="text-xs font-semibold text-white mt-1 line-clamp-2">
+                                  {z.nombre}
+                                </p>
+                              </div>
+
+                              <div className="flex items-center justify-between text-[10px] text-slate-400 mt-2.5 pt-2 border-t border-slate-800/80 font-mono">
+                                <span>📐 {areaM2} m²</span>
+                                <span>📍 {elemsZonaCount} hallazgos</span>
+                                <span className="text-emerald-400 font-bold">📸 {inspZonaCount} insp.</span>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
-                    </button>
+                    </div>
                   );
                 })
               )}

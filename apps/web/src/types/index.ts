@@ -98,6 +98,7 @@ export interface Plano {
 export interface ZonaInspeccion {
   id: string;
   plano_id: string;
+  area_planta?: string; // Ej: "131 - Efluentes", "411 - Blanqueo", "Calderas"
   codigo: string;
   nombre: string;
   cota_nivel?: number; // Cota s.n.m. ej: 146000 (Suelo), 152000 (+6m), 158000 (+12m)

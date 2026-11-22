@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS public.planos (
 CREATE TABLE IF NOT EXISTS public.zonas_inspeccion (
   id VARCHAR(100) PRIMARY KEY DEFAULT gen_random_uuid()::text,
   plano_id VARCHAR(100) NOT NULL REFERENCES public.planos(id) ON DELETE CASCADE,
+  area_planta VARCHAR(120) DEFAULT NULL,
   codigo VARCHAR(50) NOT NULL,
   nombre VARCHAR(255) NOT NULL,
   cota_nivel NUMERIC(10, 3) DEFAULT 146000.000,

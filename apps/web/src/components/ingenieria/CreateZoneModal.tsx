@@ -29,6 +29,16 @@ const DISCIPLINAS_DISPONIBLES: { id: DisciplinaZona; label: string }[] = [
   { id: 'barandas_plataformas', label: 'Barandas y Pisos Grating' }
 ];
 
+const AREAS_PLANTA_SUGERIDAS = [
+  'Efluentes',
+  'Blanqueo',
+  'Caustificación',
+  'Calderas y Energía',
+  'Secado y Embalaje',
+  'Planta Química',
+  'General / Servicios'
+];
+
 export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
   isOpen,
   onClose,
@@ -38,6 +48,8 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
 }) => {
   const [codigo, setCodigo] = useState('');
   const [nombre, setNombre] = useState('');
+  const [areaPlanta, setAreaPlanta] = useState('Efluentes');
+  const [customAreaPlanta, setCustomAreaPlanta] = useState('');
   const [cotaNivel, setCotaNivel] = useState<number>(146000);
   const [disciplinas, setDisciplinas] = useState<DisciplinaZona[]>([
     'estructuras_acero',
@@ -81,9 +93,12 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
 
       const nivelObj = NIVELES_PLANTA.find(n => n.cota === cotaNivel);
 
+      const areaFinal = areaPlanta === '__custom__' ? (customAreaPlanta.trim() || 'General') : areaPlanta;
+
       const newZona: ZonaInspeccion = {
         id: newId,
         plano_id: currentPlanoId,
+        area_planta: areaFinal,
         codigo: codigo.trim().toUpperCase(),
         nombre: nombre.trim(),
         cota_nivel: cotaNivel,
@@ -175,16 +190,41 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
             </div>
           </div>
 
-          <div>
-            <label className="text-slate-400 block mb-1">Nombre Descriptivo de la Zona / Sector *</label>
-            <input
-              type="text"
-              placeholder="Ej: Parral de cañerías alta presión y soportes entre nave 131 y clarificadores"
-              value={nombre}
-              onChange={(e) => setNombre(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none"
-              required
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-slate-400 block mb-1">Nombre Descriptivo de la Zona / Sector *</label>
+              <input
+                type="text"
+                placeholder="Ej: Parral de cañerías alta presión y soportes..."
+                value={nombre}
+                onChange={(e) => setNombre(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="text-slate-400 block mb-1">Área de Planta (Agrupación) *</label>
+              <select
+                value={areaPlanta}
+                onChange={(e) => setAreaPlanta(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-emerald-300 font-bold focus:border-emerald-400 focus:outline-none"
+              >
+                {AREAS_PLANTA_SUGERIDAS.map(a => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+                <option value="__custom__">➕ Otra Área / Escribir...</option>
+              </select>
+              {areaPlanta === '__custom__' && (
+                <input
+                  type="text"
+                  value={customAreaPlanta}
+                  onChange={(e) => setCustomAreaPlanta(e.target.value)}
+                  placeholder="Ej: Digestor, Torre Enfriamiento..."
+                  className="w-full mt-1.5 bg-slate-950 border border-emerald-500/70 rounded-lg p-2 text-white focus:outline-none"
+                />
+              )}
+            </div>
           </div>
 
           {/* 2. Disciplinas Involucradas en esta Zona de Intervención */}

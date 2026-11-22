@@ -52,6 +52,7 @@ async function ensureExtendedSchema() {
   if (schemaEnsured) return;
   try {
     await sql`ALTER TABLE public.planos ADD COLUMN IF NOT EXISTS georeferencia JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.zonas_inspeccion ADD COLUMN IF NOT EXISTS area_planta VARCHAR(120) DEFAULT NULL`;
     await sql`ALTER TABLE public.zonas_inspeccion ADD COLUMN IF NOT EXISTS coordenadas_gps_override JSONB DEFAULT NULL`;
     await sql`ALTER TABLE public.elementos ADD COLUMN IF NOT EXISTS coordenadas_gps JSONB DEFAULT NULL`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS zona_id VARCHAR(100) DEFAULT NULL`;
@@ -112,7 +113,7 @@ export async function GET(req: NextRequest) {
         ORDER BY created_at DESC
       `;
       const zonas = await sql`
-        SELECT id, plano_id, codigo, nombre, cota_nivel, estado_salud_apriori, superficie_estimada_m2
+        SELECT id, plano_id, area_planta, codigo, nombre, cota_nivel, estado_salud_apriori, superficie_estimada_m2
         FROM public.zonas_inspeccion
         ORDER BY codigo
       `;
@@ -368,13 +369,14 @@ export async function POST(req: NextRequest) {
     for (const z of zonas) {
       await sql`
         INSERT INTO public.zonas_inspeccion (
-          id, plano_id, codigo, nombre, cota_nivel, nombre_nivel,
+          id, plano_id, area_planta, codigo, nombre, cota_nivel, nombre_nivel,
           disciplinas_involucradas, estado_salud_apriori, superficie_estimada_m2,
           poligono_svg, nivel_acceso_andamio, coordenadas_gps_override
         )
         VALUES (
           ${z.id},
           ${z.plano_id},
+          ${z.area_planta || null},
           ${z.codigo},
           ${z.nombre},
           ${z.cota_nivel || 146000},
@@ -387,6 +389,7 @@ export async function POST(req: NextRequest) {
           ${z.coordenadas_gps_override ? JSON.stringify(z.coordenadas_gps_override) : null}
         )
         ON CONFLICT (id) DO UPDATE SET
+          area_planta = COALESCE(EXCLUDED.area_planta, public.zonas_inspeccion.area_planta),
           codigo = EXCLUDED.codigo,
           nombre = EXCLUDED.nombre,
           cota_nivel = EXCLUDED.cota_nivel,

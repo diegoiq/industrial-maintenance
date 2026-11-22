@@ -269,6 +269,11 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
                       <tr key={z.id} className="hover:bg-slate-900/50">
                         <td className="p-2.5 font-mono font-black text-amber-400 print:text-amber-800">
                           {z.codigo}
+                          {z.area_planta && (
+                            <span className="block text-[9px] font-sans font-bold text-emerald-400 print:text-emerald-700 mt-0.5">
+                              {z.area_planta}
+                            </span>
+                          )}
                         </td>
                         <td className="p-2.5">
                           <span className="font-bold text-white print:text-black block">{z.nombre}</span>
