@@ -1,4 +1,5 @@
 import { db, SyncQueueItem } from './db';
+import { getSyncRequestHeaders } from './security';
 import { Inspeccion } from '../types';
 
 export type SyncState = 
@@ -161,7 +162,7 @@ class SyncManager {
     try {
       const res = await fetch('/api/sync-neon', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getSyncRequestHeaders(),
         body: JSON.stringify({
           inspecciones: [inspeccion]
         })

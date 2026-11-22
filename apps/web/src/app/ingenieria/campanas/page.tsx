@@ -14,6 +14,7 @@ import {
   Sliders
 } from 'lucide-react';
 import { db } from '../../../lib/db';
+import { getSyncRequestHeaders } from '../../../lib/security';
 import { ZonaInspeccion, Elemento, Inspeccion, ParametroCubicacion, Plano } from '../../../types';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia } from '../../../lib/georeferenceEngine';
 
@@ -52,7 +53,7 @@ export default function CampanasPage() {
 
     if (loadedZonas.length === 0) {
       try {
-        const res = await fetch('/api/sync-neon');
+        const res = await fetch('/api/sync-neon', { headers: getSyncRequestHeaders() });
         const json = await res.json();
         if (json.success && json.data) {
           for (const p of (json.data.planos || [])) await db.planos.put(p);

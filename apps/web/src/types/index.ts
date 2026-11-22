@@ -11,7 +11,20 @@ export type TipoElemento =
   | 'caneria' 
   | 'tanque'
   | 'parral_caneria'
-  | 'columna_hormigon';
+  | 'columna_hormigon'
+  | 'junta_dilatacion'
+  | 'tabique'
+  | 'viga_hormigon'
+  | 'losa'
+  | 'base_bomba'
+  | string;
+
+export interface EvaluacionCivilItem {
+  elemento_civil: string; // 'juntas' | 'tabiques' | 'columnas' | 'vigas' | 'losas' | 'bases_bombas' | custom
+  estado: 'bueno' | 'regular' | 'severo' | 'critico';
+  patologias: string[]; // ej: ['Fisuración / Grietas', 'Armadura expuesta / Corrosión', 'Desprendimiento / Spalling', 'Filtración / Humedad', 'Falla de sello / Junta', 'Vibración / Grout fisurado']
+  observacion?: string;
+}
 
 export type DisciplinaZona = 
   | 'estructuras_acero'
@@ -176,7 +189,13 @@ export interface Inspeccion {
   tasa_avance_anual_pct?: number;
   meses_ventana_intervencion?: number;
   proxima_inspeccion_fecha?: string;
-  coordenadas_gps?: { lat: number; lng: number; precision_m?: number };
+  coordenadas_gps?: { lat: number; lng: number; precision_m?: number; timestamp?: string; en_recorrido?: boolean };
+  historial_recorrido_gps?: { lat: number; lng: number; precision_m?: number; timestamp: string; pixelX?: number; pixelY?: number; zona_detectada?: string }[];
+  evaluacion_civil?: {
+    aplica: boolean;
+    items: EvaluacionCivilItem[];
+    notas_civiles?: string;
+  };
   observaciones?: string;
   diagnostico_ia?: any;
   fotos: FotoInspeccionLocal[];

@@ -1,4 +1,5 @@
 import { db } from './db';
+import { getSyncRequestHeaders } from './security';
 
 /**
  * Envía una sincronización ultra-rápida (~4 KB, <200 ms) a Neon PostgreSQL.
@@ -32,7 +33,7 @@ export async function pushFastSyncToCloud(options: {
 
     const res = await fetch('/api/sync-neon', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getSyncRequestHeaders(),
       body: JSON.stringify({
         areas: allAreas,
         planos: planosPayload,
@@ -40,8 +41,8 @@ export async function pushFastSyncToCloud(options: {
         elementos: allElementos,
         hitos: allHitos,
         inspecciones: allInspecciones,
-        authoritativeZonas: options.authoritativeZonas !== false,
-        authoritativeHitos: options.authoritativeHitos !== false
+        authoritativeZonas: options.authoritativeZonas !== false && allZonas.length > 0,
+        authoritativeHitos: options.authoritativeHitos !== false && allHitos.length > 0
       })
     });
 
@@ -59,7 +60,7 @@ export async function deleteFromCloud(type: 'zona' | 'elemento' | 'hito' | 'plan
   try {
     await fetch('/api/sync-neon', {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getSyncRequestHeaders(),
       body: JSON.stringify({ type, id })
     });
   } catch (e) {
@@ -79,7 +80,8 @@ export async function pullAndReconcileFromCloud(): Promise<boolean> {
     const hasLocalPlanImage = localPlanos.length > 0 && localPlanos.every(p => !!(p.archivo_data_url || p.svg_content || p.archivo_original_url));
 
     const res = await fetch(`/api/sync-neon${hasLocalPlanImage ? '?light=1' : ''}`, {
-      cache: 'no-store'
+      cache: 'no-store',
+      headers: getSyncRequestHeaders()
     });
     const json = await res.json();
     if (!json.success || !json.data) return false;

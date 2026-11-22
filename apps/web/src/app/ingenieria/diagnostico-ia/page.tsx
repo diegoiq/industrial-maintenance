@@ -13,6 +13,7 @@ import {
   Upload
 } from 'lucide-react';
 import { db } from '../../../lib/db';
+import { getSyncRequestHeaders } from '../../../lib/security';
 import { ZonaInspeccion, Inspeccion, Elemento } from '../../../types';
 import { compressInspectionPhoto } from '../../../lib/imageCompression';
 
@@ -36,7 +37,7 @@ export default function DiagnosticoIAPage() {
 
     if (loadedZonas.length === 0) {
       try {
-        const res = await fetch('/api/sync-neon');
+        const res = await fetch('/api/sync-neon', { headers: getSyncRequestHeaders() });
         const json = await res.json();
         if (json.success && json.data) {
           for (const z of (json.data.zonas || [])) await db.zonas.put(z);

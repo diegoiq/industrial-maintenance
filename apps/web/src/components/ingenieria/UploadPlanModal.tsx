@@ -5,6 +5,7 @@ import { Upload, X, CheckCircle2, AlertCircle, Building2, Map, Layers, RotateCw,
 import { Area, Plano } from '../../types';
 import { convertPdfPageToImage, convertPdfPageToSvg, rotateImageDataUrl } from '../../lib/pdfRenderer';
 import { parseDxfToSvg } from '../../lib/dxfParser';
+import { sanitizeSvgContent } from '../../lib/security';
 import { db } from '../../lib/db';
 
 interface UploadPlanModalProps {
@@ -116,7 +117,8 @@ export const UploadPlanModal: React.FC<UploadPlanModalProps> = ({
       setFileType('svg');
       const reader = new FileReader();
       reader.onload = (event) => {
-        const text = event.target?.result as string;
+        const rawText = event.target?.result as string;
+        const text = sanitizeSvgContent(rawText);
         setSvgContent(text);
         setFilePreview(text);
 

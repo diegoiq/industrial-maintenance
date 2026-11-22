@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { Plano, ZonaInspeccion, Elemento, EstadoSemaforo, HitoGeografico, PlanoGeoreferencia } from '../../types';
 import { convertPdfPageToImage, rotateImageDataUrl } from '../../lib/pdfRenderer';
+import { sanitizeSvgContent } from '../../lib/security';
 import { 
   getOrInitGeoreferencia, 
   pixelToLatLng, 
@@ -267,11 +268,12 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
       const newHeight = plano.dimensiones_viewbox.width;
 
       if (plano.svg_content) {
+        const cleanSvg = sanitizeSvgContent(plano.svg_content);
         const parser = new DOMParser();
-        const doc = parser.parseFromString(plano.svg_content, 'image/svg+xml');
+        const doc = parser.parseFromString(cleanSvg, 'image/svg+xml');
         const svgEl = doc.querySelector('svg');
         if (svgEl) {
-          const innerHtml = svgEl.innerHTML;
+          const innerHtml = sanitizeSvgContent(svgEl.innerHTML);
           const rotatedSvg = `
             <g transform="rotate(${clockwise ? 90 : 270} ${newWidth / 2} ${newHeight / 2})">
               ${innerHtml}
@@ -1375,7 +1377,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                 >
                   {plano.svg_content ? (
                     <g
-                      dangerouslySetInnerHTML={{ __html: plano.svg_content }}
+                      dangerouslySetInnerHTML={{ __html: sanitizeSvgContent(plano.svg_content) }}
                       opacity={showSatellite ? cadOpacity : 1}
                       filter={showSatellite && invertCadLines ? 'url(#invert-cad)' : undefined}
                     />

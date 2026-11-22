@@ -17,16 +17,27 @@ app = FastAPI(
     version="1.0.0"
 )
 
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,https://industrial-maintenance-web.onrender.com"
+    ).split(",")
+    if origin.strip()
+]
+ALLOW_ALL_ORIGINS = "*" in ALLOWED_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"] if ALLOW_ALL_ORIGINS else ALLOWED_ORIGINS,
+    allow_credentials=not ALLOW_ALL_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-Sync-Token"],
 )
 
 START_TIME = time.time()
 RENDER_MAX_RAM_MB = float(os.getenv("RENDER_RAM_LIMIT_MB", "512.0"))
+MAX_DXF_UPLOAD_BYTES = int(os.getenv("MAX_DXF_UPLOAD_BYTES", str(15 * 1024 * 1024)))
 
 class CubicarRequest(BaseModel):
     elemento_tag: str
@@ -275,9 +286,17 @@ async def convert_dxf_to_svg(file: UploadFile = File(...)):
     """
     Convierte entidades DXF a trazados SVG optimizados para el navegador sin saturar RAM.
     """
-    filename = file.filename.lower()
+    raw_name = os.path.basename(file.filename or "plano.dxf")
+    filename = raw_name.lower()
     if not (filename.endswith(".dxf") or filename.endswith(".svg")):
         raise HTTPException(status_code=400, detail="Formato no soportado. Suba un archivo DXF o SVG.")
+
+    content = await file.read(MAX_DXF_UPLOAD_BYTES + 1)
+    if len(content) > MAX_DXF_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El archivo excede el límite máximo permitido ({MAX_DXF_UPLOAD_BYTES // (1024 * 1024)} MB)."
+        )
 
     # Generación de SVG representativo optimizado para planos de planta
     svg_sample = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="100%" height="100%">

@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS public.planos (
   rotacion INT DEFAULT 0,
   tipo_plano VARCHAR(50) DEFAULT 'area_detalle',
   dimensiones_viewbox JSONB DEFAULT '{"width": 2000, "height": 1200}'::jsonb,
+  georeferencia JSONB DEFAULT NULL,
   version INT NOT NULL DEFAULT 1,
   activo BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS public.zonas_inspeccion (
   superficie_estimada_m2 NUMERIC(10, 2) DEFAULT 0.00,
   poligono_svg JSONB NOT NULL DEFAULT '{"puntos": []}'::jsonb,
   nivel_acceso_andamio JSONB DEFAULT '{"altura_mts": 6.5, "envolvente_m3": 180.0, "complejidad": "media", "requiere_parada": false}'::jsonb,
+  coordenadas_gps_override JSONB DEFAULT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
   CONSTRAINT uq_plano_zona UNIQUE (plano_id, codigo)
 );
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS public.elementos (
   geometria_parametros JSONB DEFAULT '{"perfil": "W12x40", "longitud_m": 6.0, "m2_superficie": 14.5, "peso_kg": 358.0, "tipologia": "columna"}'::jsonb,
   criticidad_activo INT NOT NULL DEFAULT 3 CHECK (criticidad_activo BETWEEN 1 AND 5),
   estado_actual estado_semaforo NOT NULL DEFAULT 'gris',
+  coordenadas_gps JSONB DEFAULT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
   CONSTRAINT uq_zona_tag UNIQUE (zona_id, tag_codigo)
@@ -87,7 +90,9 @@ CREATE TABLE IF NOT EXISTS public.elementos (
 -- 6. TABLA: Inspecciones de Campo
 CREATE TABLE IF NOT EXISTS public.inspecciones (
   id VARCHAR(100) PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  elemento_id VARCHAR(100) NOT NULL REFERENCES public.elementos(id) ON DELETE CASCADE,
+  elemento_id VARCHAR(100),
+  zona_id VARCHAR(100) DEFAULT NULL,
+  zona_codigo VARCHAR(100) DEFAULT NULL,
   inspector_id VARCHAR(100),
   fecha_inspeccion TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
   estado_sincronizacion VARCHAR(30) NOT NULL DEFAULT 'sincronizado',
@@ -99,8 +104,27 @@ CREATE TABLE IF NOT EXISTS public.inspecciones (
   criticidad_calculada INT NOT NULL DEFAULT 3 CHECK (criticidad_calculada BETWEEN 1 AND 5),
   observaciones TEXT,
   diagnostico_ia JSONB DEFAULT NULL,
+  fotos_json JSONB DEFAULT '[]'::jsonb,
+  coordenadas_gps JSONB DEFAULT NULL,
+  historial_recorrido_gps JSONB DEFAULT '[]'::jsonb,
+  evaluacion_civil JSONB DEFAULT NULL,
   validado_por_ingeniero_id VARCHAR(100),
   fecha_validacion TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- 6b. TABLA: Hitos Geográficos (GPS)
+CREATE TABLE IF NOT EXISTS public.hitos_geograficos (
+  id VARCHAR(100) PRIMARY KEY,
+  codigo VARCHAR(100) NOT NULL,
+  nombre VARCHAR(255) NOT NULL,
+  tipo VARCHAR(50) NOT NULL DEFAULT 'referencia_general',
+  lat NUMERIC(12, 7) NOT NULL,
+  lng NUMERIC(12, 7) NOT NULL,
+  cota_snm NUMERIC(10, 2) DEFAULT 146000,
+  descripcion TEXT,
+  plano_id VARCHAR(100),
+  coordenadas_plano JSONB DEFAULT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 

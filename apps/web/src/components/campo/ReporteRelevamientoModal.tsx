@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Area, Elemento, Inspeccion, Plano, ZonaInspeccion } from '../../types';
 import { db } from '../../lib/db';
+import { sanitizeCsvCell } from '../../lib/security';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia, getPolygonCentroid, pixelToLatLng } from '../../lib/georeferenceEngine';
 
 interface ReporteRelevamientoModalProps {
@@ -105,28 +106,30 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
       const inspCount = inspecciones.filter(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`).length;
 
       return [
-        `"${z.codigo}"`,
-        `"${z.nombre}"`,
-        `+${(Number(z.cota_nivel || 146000) / 1000).toFixed(1)}m`,
-        `"${gps.lat.toFixed(5)}, ${gps.lng.toFixed(5)}"`,
-        `"${(z.disciplinas_involucradas || []).join(' | ')}"`,
+        sanitizeCsvCell(z.codigo, true),
+        sanitizeCsvCell(z.nombre, true),
+        sanitizeCsvCell(`+${(Number(z.cota_nivel || 146000) / 1000).toFixed(1)}m`, false),
+        sanitizeCsvCell(`${gps.lat.toFixed(5)}, ${gps.lng.toFixed(5)}`, true),
+        sanitizeCsvCell((z.disciplinas_involucradas || []).join(' | '), true),
         m2,
         z.nivel_acceso_andamio?.envolvente_m3 || 180,
         z.nivel_acceso_andamio?.altura_mts || 6.5,
         z.nivel_acceso_andamio?.requiere_parada ? 'PARADA DE PLANTA' : 'EN MARCHA',
-        (z.estado_salud_apriori || 'regular').toUpperCase(),
+        sanitizeCsvCell((z.estado_salud_apriori || 'regular').toUpperCase(), false),
         inspCount
       ].join(';');
     });
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(';'), ...rows].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvString = [headers.join(';'), ...rows].join('\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `INFORME_PRELIMINAR_${plano?.titulo || 'PLANTA'}_${new Date().toISOString().substring(0, 10)}.csv`);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `INFORME_PRELIMINAR_${(plano?.titulo || 'PLANTA').replace(/[^a-zA-Z0-9_-]/g, '_')}_${new Date().toISOString().substring(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -325,18 +328,68 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
                 {inspecciones.map((insp) => (
                   <div key={insp.id} className="p-4 bg-slate-900 print:bg-gray-100 rounded-xl border border-slate-800 print:border-gray-300 space-y-2 text-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 print:border-gray-300 pb-2">
-                      <div className="flex items-center space-x-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono font-black text-amber-400 print:text-black">
                           {insp.zona_codigo ? `ZONA: ${insp.zona_codigo}` : insp.elemento_id}
                         </span>
                         <span className="px-2 py-0.5 bg-amber-950 text-amber-300 border border-amber-700 rounded font-mono text-[10px] font-bold">
                           ISO 4628: {insp.grado_corrosion} ({insp.porcentaje_afectado}% afectado)
                         </span>
+                        {insp.coordenadas_gps && (
+                          <span className="px-2 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-700 rounded font-mono text-[10px]">
+                            📍 GPS Operario: {insp.coordenadas_gps.lat.toFixed(5)}, {insp.coordenadas_gps.lng.toFixed(5)} (±{insp.coordenadas_gps.precision_m || 5}m)
+                          </span>
+                        )}
                       </div>
                       <span className="font-mono text-[11px] text-slate-400">
                         Fecha: {new Date(insp.fecha_inspeccion).toLocaleDateString()} · {insp.inspector_nombre || 'Inspector Planta'}
                       </span>
                     </div>
+
+                    <div className="text-[11px] text-slate-300 print:text-gray-800 flex flex-wrap gap-3">
+                      <span><strong>Sustrato:</strong> {insp.clasificacion_sustrato.replace(/_/g, ' ')}</span>
+                      <span><strong>Recubrimiento:</strong> {insp.clasificacion_recubrimiento.replace(/_/g, ' ')}</span>
+                      {insp.historial_recorrido_gps && insp.historial_recorrido_gps.length > 0 && (
+                        <span className="text-emerald-400 print:text-emerald-800 font-mono">
+                          🛰️ Recorrido registrado: {insp.historial_recorrido_gps.length} posiciones GPS
+                        </span>
+                      )}
+                    </div>
+
+                    {insp.evaluacion_civil?.aplica && insp.evaluacion_civil.items?.length > 0 && (
+                      <div className="p-2.5 bg-slate-950 print:bg-gray-200 rounded-lg border border-amber-500/30 space-y-1.5">
+                        <span className="text-[10px] font-mono font-bold uppercase text-amber-400 print:text-amber-800 block">
+                          🏗️ Evaluaciones Civiles (Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas)
+                        </span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                          {insp.evaluacion_civil.items.map((civ, cIdx) => (
+                            <div key={cIdx} className="text-[11px] bg-slate-900 print:bg-white p-1.5 rounded border border-slate-800 print:border-gray-300">
+                              <div className="flex items-center justify-between">
+                                <strong className="text-white print:text-black">{civ.elemento_civil}</strong>
+                                <span className="uppercase font-mono text-[10px] font-bold text-amber-300 print:text-black">
+                                  [{civ.estado}]
+                                </span>
+                              </div>
+                              {civ.patologias && civ.patologias.length > 0 && (
+                                <span className="text-[10px] text-slate-400 print:text-gray-700 block">
+                                  Patologías: {civ.patologias.join(', ')}
+                                </span>
+                              )}
+                              {civ.observacion && (
+                                <span className="text-[10px] text-slate-300 print:text-black italic block">
+                                  &quot;{civ.observacion}&quot;
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        {insp.evaluacion_civil.notas_civiles && (
+                          <p className="text-[11px] text-slate-300 print:text-black pt-1">
+                            <strong>Nota Civil:</strong> {insp.evaluacion_civil.notas_civiles}
+                          </p>
+                        )}
+                      </div>
+                    )}
 
                     {insp.observaciones && (
                       <p className="text-slate-200 print:text-black italic">

@@ -11,6 +11,7 @@ import {
   Sliders
 } from 'lucide-react';
 import { db } from '../../../lib/db';
+import { sanitizeCsvCell, getSyncRequestHeaders } from '../../../lib/security';
 import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, ParametroCubicacion } from '../../../types';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia, getPolygonCentroid, pixelToLatLng } from '../../../lib/georeferenceEngine';
 
@@ -58,7 +59,7 @@ export default function PresupuestosPlanMaestroPage() {
 
       if (loadedZonas.length === 0) {
         try {
-          const res = await fetch('/api/sync-neon');
+          const res = await fetch('/api/sync-neon', { headers: getSyncRequestHeaders() });
           const json = await res.json();
           if (json.success && json.data) {
             for (const a of (json.data.areas || [])) await db.areas.put(a);
@@ -203,14 +204,14 @@ export default function PresupuestosPlanMaestroPage() {
     ];
 
     const rows = filasERP.map(f => [
-      f.tipoRegistro,
-      `"${f.ubicacionErp}"`,
-      `"${f.codigoTag}"`,
-      `"${f.nombre}"`,
-      f.cotaM,
-      `"${f.gpsStr}"`,
-      f.estadoSalud,
-      f.prioridad,
+      sanitizeCsvCell(f.tipoRegistro, false),
+      sanitizeCsvCell(f.ubicacionErp, true),
+      sanitizeCsvCell(f.codigoTag, true),
+      sanitizeCsvCell(f.nombre, true),
+      sanitizeCsvCell(f.cotaM, false),
+      sanitizeCsvCell(f.gpsStr, true),
+      sanitizeCsvCell(f.estadoSalud, false),
+      sanitizeCsvCell(f.prioridad, false),
       f.anioAsignado,
       f.m2Superficie,
       f.m2Afectados,

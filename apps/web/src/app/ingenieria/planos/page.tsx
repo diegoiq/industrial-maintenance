@@ -28,6 +28,7 @@ import { CreateHitoModal } from '../../../components/ingenieria/CreateHitoModal'
 import { ReporteRelevamientoModal } from '../../../components/campo/ReporteRelevamientoModal';
 import { HitosMapsModal } from '../../../components/ingenieria/HitosMapsModal';
 import { db } from '../../../lib/db';
+import { getSyncRequestHeaders } from '../../../lib/security';
 import { pushFastSyncToCloud, deleteFromCloud, pullAndReconcileFromCloud } from '../../../lib/cloudSync';
 import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico } from '../../../types';
 
@@ -106,7 +107,7 @@ export default function PlanosIngenieriaPage() {
     // Si el almacenamiento local del dispositivo está vacío, hidratar desde Neon Cloud
     if (loadedPlanos.length === 0) {
       try {
-        const res = await fetch('/api/sync-neon');
+        const res = await fetch('/api/sync-neon', { headers: getSyncRequestHeaders() });
         const json = await res.json();
         if (json.success && json.data.planos && json.data.planos.length > 0) {
           for (const a of (json.data.areas || [])) await db.areas.put(a);

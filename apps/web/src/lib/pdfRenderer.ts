@@ -72,10 +72,12 @@ async function getPdfJsLib(): Promise<any> {
     console.warn("Fallo importación local pdfjs-dist, cargando script CDN...", err);
   }
 
-  // 3. Fallback CDN en tiempo de ejecución
+  // 3. Fallback CDN en tiempo de ejecución con atributos de seguridad crossOrigin y referrerPolicy
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.crossOrigin = 'anonymous';
+    script.referrerPolicy = 'no-referrer';
     script.onload = () => {
       const lib = (window as any).pdfjsLib;
       if (lib) {

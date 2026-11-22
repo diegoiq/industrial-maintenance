@@ -1,5 +1,23 @@
 import { neon } from '@neondatabase/serverless';
 
-const connectionString = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_wGW7bIAYOPa6@ep-hidden-flower-bc65z5nj-pooler.c-16.us-east-1.aws.neon.tech/neondb?sslmode=require';
+let cachedSqlClient: ReturnType<typeof neon> | null = null;
 
-export const sql = neon(connectionString);
+function getSqlClient() {
+  if (cachedSqlClient) return cachedSqlClient;
+
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL no está configurada en las variables de entorno del servidor.');
+  }
+
+  cachedSqlClient = neon(connectionString);
+  return cachedSqlClient;
+}
+
+export const sql = (
+  strings: TemplateStringsArray,
+  ...values: any[]
+): Promise<Record<string, any>[]> => {
+  const client = getSqlClient();
+  return client(strings, ...values) as Promise<Record<string, any>[]>;
+};

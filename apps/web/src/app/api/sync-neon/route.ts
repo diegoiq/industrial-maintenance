@@ -1,42 +1,93 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/neon';
 import { uploadToB2 } from '@/lib/b2';
+import {
+  isValidEntityId,
+  sanitizeSvgContent,
+  validateBase64DataUrl
+} from '@/lib/security';
 import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico } from '@/types';
 
 export const dynamic = 'force-dynamic';
+
+const MAX_PLAN_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MB máx por plano
+const MAX_PHOTO_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB máx por foto WebP
+const ALLOWED_PLAN_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'];
+const ALLOWED_PHOTO_MIMES = ['image/webp', 'image/jpeg', 'image/png'];
+
+function verifySyncAuthorization(req: NextRequest, isMutation: boolean): NextResponse | null {
+  const configuredToken = process.env.SYNC_API_TOKEN || process.env.NEXT_PUBLIC_SYNC_API_TOKEN;
+  if (configuredToken) {
+    const headerToken =
+      req.headers.get('x-sync-token') ||
+      req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+    if (headerToken !== configuredToken) {
+      return NextResponse.json(
+        { success: false, error: 'No autorizado: token de sincronización inválido o ausente.' },
+        { status: 401 }
+      );
+    }
+  }
+
+  if (isMutation) {
+    const requestedWith = req.headers.get('x-requested-with');
+    const origin = req.headers.get('origin');
+    const host = req.headers.get('host');
+    const isSameOrigin = origin && host ? origin.includes(host) : false;
+
+    if (requestedWith !== 'industrial-maintenance-pwa' && !isSameOrigin) {
+      return NextResponse.json(
+        { success: false, error: 'Petición rechazada por protección CSRF / origen no autorizado.' },
+        { status: 403 }
+      );
+    }
+  }
+
+  return null;
+}
 
 let schemaEnsured = false;
 
 async function ensureExtendedSchema() {
   if (schemaEnsured) return;
-  await sql`ALTER TABLE public.planos ADD COLUMN IF NOT EXISTS georeferencia JSONB DEFAULT NULL`;
-  await sql`ALTER TABLE public.zonas_inspeccion ADD COLUMN IF NOT EXISTS coordenadas_gps_override JSONB DEFAULT NULL`;
-  await sql`ALTER TABLE public.elementos ADD COLUMN IF NOT EXISTS coordenadas_gps JSONB DEFAULT NULL`;
-  await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS zona_id VARCHAR(100) DEFAULT NULL`;
-  await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS zona_codigo VARCHAR(100) DEFAULT NULL`;
-  await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS fotos_json JSONB DEFAULT '[]'::jsonb`;
-  await sql`ALTER TABLE public.inspecciones ALTER COLUMN elemento_id DROP NOT NULL`;
-  await sql`ALTER TABLE public.inspecciones DROP CONSTRAINT IF EXISTS inspecciones_elemento_id_fkey`;
+  try {
+    await sql`ALTER TABLE public.planos ADD COLUMN IF NOT EXISTS georeferencia JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.zonas_inspeccion ADD COLUMN IF NOT EXISTS coordenadas_gps_override JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.elementos ADD COLUMN IF NOT EXISTS coordenadas_gps JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS zona_id VARCHAR(100) DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS zona_codigo VARCHAR(100) DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS fotos_json JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS coordenadas_gps JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS historial_recorrido_gps JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS evaluacion_civil JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ALTER COLUMN elemento_id DROP NOT NULL`;
 
-  await sql`
-    CREATE TABLE IF NOT EXISTS public.hitos_geograficos (
-      id VARCHAR(100) PRIMARY KEY,
-      codigo VARCHAR(100) NOT NULL,
-      nombre VARCHAR(255) NOT NULL,
-      tipo VARCHAR(50) NOT NULL DEFAULT 'referencia_general',
-      lat NUMERIC(12, 7) NOT NULL,
-      lng NUMERIC(12, 7) NOT NULL,
-      cota_snm NUMERIC(10, 2) DEFAULT 146000,
-      descripcion TEXT,
-      plano_id VARCHAR(100),
-      coordenadas_plano JSONB DEFAULT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
-    )
-  `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS public.hitos_geograficos (
+        id VARCHAR(100) PRIMARY KEY,
+        codigo VARCHAR(100) NOT NULL,
+        nombre VARCHAR(255) NOT NULL,
+        tipo VARCHAR(50) NOT NULL DEFAULT 'referencia_general',
+        lat NUMERIC(12, 7) NOT NULL,
+        lng NUMERIC(12, 7) NOT NULL,
+        cota_snm NUMERIC(10, 2) DEFAULT 146000,
+        descripcion TEXT,
+        plano_id VARCHAR(100),
+        coordenadas_plano JSONB DEFAULT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+      )
+    `;
+  } catch (ddlErr) {
+    // Si el rol de base de datos es de privilegio mínimo (solo DML), continuar usando el esquema existente
+    console.warn('Aviso: omitiendo auto-migración DDL en runtime:', ddlErr);
+  }
   schemaEnsured = true;
 }
 
 export async function GET(req: NextRequest) {
+  const authError = verifySyncAuthorization(req, false);
+  if (authError) return authError;
+
   try {
     await ensureExtendedSchema();
     const isLight = req.nextUrl.searchParams.get('light') === '1';
@@ -66,7 +117,10 @@ export async function GET(req: NextRequest) {
       light: isLight,
       data: {
         areas,
-        planos,
+        planos: planos.map((p: any) => ({
+          ...p,
+          svg_content: p.svg_content ? sanitizeSvgContent(p.svg_content) : p.svg_content
+        })),
         zonas,
         elementos,
         hitos: hitos.map((h: any) => ({
@@ -82,18 +136,21 @@ export async function GET(req: NextRequest) {
     });
   } catch (err: any) {
     console.error('Error fetching Neon data:', err);
-    return NextResponse.json({ success: false, error: err?.message || 'Error en consulta Neon' }, { status: 500 });
+    return NextResponse.json({ success: false, error: 'Error al consultar datos de sincronización en servidor.' }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
+  const authError = verifySyncAuthorization(req, true);
+  if (authError) return authError;
+
   try {
     await ensureExtendedSchema();
     const body = await req.json();
     const { type, id } = body;
 
-    if (!type || !id) {
-      return NextResponse.json({ success: false, error: 'Falta type o id' }, { status: 400 });
+    if (!type || !isValidEntityId(id)) {
+      return NextResponse.json({ success: false, error: 'Parámetros type o id inválidos' }, { status: 400 });
     }
 
     if (type === 'zona') {
@@ -107,16 +164,21 @@ export async function DELETE(req: NextRequest) {
       await sql`DELETE FROM public.planos WHERE id = ${id}`;
     } else if (type === 'area') {
       await sql`DELETE FROM public.areas WHERE id = ${id}`;
+    } else {
+      return NextResponse.json({ success: false, error: 'Tipo de entidad no soportado' }, { status: 400 });
     }
 
     return NextResponse.json({ success: true, deleted: { type, id } });
   } catch (err: any) {
     console.error('Error deleting in Neon:', err);
-    return NextResponse.json({ success: false, error: err?.message }, { status: 500 });
+    return NextResponse.json({ success: false, error: 'Error al eliminar el registro en servidor.' }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
+  const authError = verifySyncAuthorization(req, true);
+  if (authError) return authError;
+
   try {
     await ensureExtendedSchema();
 
@@ -157,27 +219,35 @@ export async function POST(req: NextRequest) {
       `;
     }
 
-    // 2. Planos (Solo sube imagen a B2 si aún no tiene archivo_original_url en B2, evitando demoras en syncs frecuentes)
+    // 2. Planos (Solo sube imagen a B2 si aún no tiene archivo_original_url en B2, validando ID, MIME y tamaño)
     for (const p of planos) {
+      if (!isValidEntityId(p.id)) continue;
       let b2Url = p.archivo_original_url || null;
 
       if (!b2Url && p.archivo_data_url && p.archivo_data_url.startsWith('data:')) {
         try {
-          const match = p.archivo_data_url.match(/^data:(.*?);base64,(.*)$/);
-          if (match) {
-            const mimeType = match[1] || 'image/png';
-            const base64Data = match[2];
-            const buffer = Buffer.from(base64Data, 'base64');
-            const ext = mimeType.includes('pdf') ? 'pdf' : (mimeType.includes('jpeg') ? 'jpg' : 'png');
+          const validated = validateBase64DataUrl(p.archivo_data_url, ALLOWED_PLAN_MIMES, MAX_PLAN_UPLOAD_BYTES);
+          if (validated.valid) {
+            const ext = validated.mimeType.includes('pdf')
+              ? 'pdf'
+              : validated.mimeType.includes('jpeg')
+              ? 'jpg'
+              : validated.mimeType.includes('webp')
+              ? 'webp'
+              : 'png';
             const key = `planos/${p.id}.${ext}`;
 
-            b2Url = await uploadToB2(key, buffer, mimeType);
+            b2Url = await uploadToB2(key, validated.buffer, validated.mimeType);
             b2UploadsCount++;
+          } else {
+            console.warn(`Archivo de plano ${p.id} rechazado por validación de seguridad:`, validated.error);
           }
         } catch (uploadErr) {
           console.warn(`Error subiendo archivo de plano ${p.id} a B2:`, uploadErr);
         }
       }
+
+      const safeSvgContent = p.svg_content ? sanitizeSvgContent(p.svg_content) : null;
 
       await sql`
         INSERT INTO public.planos (
@@ -189,7 +259,7 @@ export async function POST(req: NextRequest) {
           ${p.area_id},
           ${p.titulo},
           ${b2Url},
-          ${p.svg_content || null},
+          ${safeSvgContent},
           ${p.archivo_data_url || null},
           ${p.rotacion || 0},
           ${p.tipo_plano || 'area_detalle'},
@@ -212,8 +282,8 @@ export async function POST(req: NextRequest) {
       `;
     }
 
-    // 3. Zonas (Con reconciliación exacta: si authoritativeZonas === true, elimina en Neon las zonas borradas en PC)
-    if (authoritativeZonas) {
+    // 3. Zonas (Protegido contra borrado masivo accidental cuando zonas viene vacío desde un cliente sin hidratar)
+    if (authoritativeZonas && zonas.length > 0) {
       const currentNeonZonas = await sql`SELECT id FROM public.zonas_inspeccion`;
       const incomingIds = new Set(zonas.map(z => z.id));
       for (const row of currentNeonZonas) {
@@ -295,8 +365,8 @@ export async function POST(req: NextRequest) {
       `;
     }
 
-    // 5. Hitos Geográficos (GPS)
-    if (authoritativeHitos) {
+    // 5. Hitos Geográficos (GPS) (Protegido contra borrado masivo accidental cuando hitos viene vacío)
+    if (authoritativeHitos && hitos.length > 0) {
       const currentNeonHitos = await sql`SELECT id FROM public.hitos_geograficos`;
       const incomingHitoIds = new Set(hitos.map(h => h.id));
       for (const row of currentNeonHitos) {
@@ -307,6 +377,7 @@ export async function POST(req: NextRequest) {
     }
 
     for (const h of hitos) {
+      if (!isValidEntityId(h.id)) continue;
       await sql`
         INSERT INTO public.hitos_geograficos (
           id, codigo, nombre, tipo, lat, lng, cota_snm, descripcion, plano_id, coordenadas_plano
@@ -337,20 +408,22 @@ export async function POST(req: NextRequest) {
 
     // 6. Inspecciones y Galería Multi-Foto en Backblaze B2
     for (const insp of inspecciones) {
+      if (!isValidEntityId(insp.id)) continue;
       const processedFotos = [];
       if (Array.isArray(insp.fotos)) {
-        for (let idx = 0; idx < insp.fotos.length; idx++) {
+        const maxPhotosPerInsp = Math.min(insp.fotos.length, 30);
+        for (let idx = 0; idx < maxPhotosPerInsp; idx++) {
           const f = insp.fotos[idx];
           let storageUrl = f.storage_url || null;
           if (!storageUrl && f.thumbnail_data_url && f.thumbnail_data_url.startsWith('data:')) {
             try {
-              const match = f.thumbnail_data_url.match(/^data:(.*?);base64,(.*)$/);
-              if (match) {
-                const mimeType = match[1] || 'image/webp';
-                const buffer = Buffer.from(match[2], 'base64');
+              const validated = validateBase64DataUrl(f.thumbnail_data_url, ALLOWED_PHOTO_MIMES, MAX_PHOTO_UPLOAD_BYTES);
+              if (validated.valid) {
                 const key = `inspecciones/${insp.id}/foto_${idx + 1}.webp`;
-                storageUrl = await uploadToB2(key, buffer, mimeType);
+                storageUrl = await uploadToB2(key, validated.buffer, validated.mimeType);
                 b2UploadsCount++;
+              } else {
+                console.warn(`Foto #${idx + 1} de inspección ${insp.id} rechazada:`, validated.error);
               }
             } catch (e) {
               console.warn('Error subiendo foto de inspección a B2:', e);
@@ -372,7 +445,8 @@ export async function POST(req: NextRequest) {
           id, elemento_id, zona_id, zona_codigo, inspector_id, fecha_inspeccion,
           estado_sincronizacion, clasificacion_sustrato, clasificacion_recubrimiento,
           grado_corrosion, requiere_reemplazo, porcentaje_afectado,
-          criticidad_calculada, observaciones, diagnostico_ia, fotos_json
+          criticidad_calculada, observaciones, diagnostico_ia, fotos_json,
+          coordenadas_gps, historial_recorrido_gps, evaluacion_civil
         )
         VALUES (
           ${insp.id},
@@ -390,7 +464,10 @@ export async function POST(req: NextRequest) {
           ${insp.criticidad_calculada || 3},
           ${insp.observaciones || null},
           ${insp.diagnostico_ia ? JSON.stringify(insp.diagnostico_ia) : null},
-          ${JSON.stringify(processedFotos)}
+          ${JSON.stringify(processedFotos)},
+          ${insp.coordenadas_gps ? JSON.stringify(insp.coordenadas_gps) : null},
+          ${insp.historial_recorrido_gps ? JSON.stringify(insp.historial_recorrido_gps) : '[]'},
+          ${insp.evaluacion_civil ? JSON.stringify(insp.evaluacion_civil) : null}
         )
         ON CONFLICT (id) DO UPDATE SET
           estado_sincronizacion = 'sincronizado',
@@ -404,7 +481,10 @@ export async function POST(req: NextRequest) {
           criticidad_calculada = EXCLUDED.criticidad_calculada,
           observaciones = EXCLUDED.observaciones,
           diagnostico_ia = EXCLUDED.diagnostico_ia,
-          fotos_json = EXCLUDED.fotos_json
+          fotos_json = EXCLUDED.fotos_json,
+          coordenadas_gps = COALESCE(EXCLUDED.coordenadas_gps, public.inspecciones.coordenadas_gps),
+          historial_recorrido_gps = COALESCE(EXCLUDED.historial_recorrido_gps, public.inspecciones.historial_recorrido_gps),
+          evaluacion_civil = COALESCE(EXCLUDED.evaluacion_civil, public.inspecciones.evaluacion_civil)
       `;
     }
 
@@ -426,7 +506,7 @@ export async function POST(req: NextRequest) {
     console.error('Error in sync-neon endpoint:', err);
     return NextResponse.json({
       success: false,
-      error: err?.message || 'Error procesando sincronización en Neon'
+      error: 'Error procesando sincronización en el servidor.'
     }, { status: 500 });
   }
 }

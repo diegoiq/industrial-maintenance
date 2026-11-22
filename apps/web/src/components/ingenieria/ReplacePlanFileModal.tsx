@@ -5,6 +5,7 @@ import { RefreshCw, X, CheckCircle2, AlertCircle, FileCode, Sparkles, Loader2, U
 import { Plano } from '../../types';
 import { convertPdfPageToImage, convertPdfPageToSvg } from '../../lib/pdfRenderer';
 import { parseDxfToSvg } from '../../lib/dxfParser';
+import { sanitizeSvgContent } from '../../lib/security';
 import { db } from '../../lib/db';
 
 interface ReplacePlanFileModalProps {
@@ -110,7 +111,8 @@ export const ReplacePlanFileModal: React.FC<ReplacePlanFileModalProps> = ({
       setFileType('svg');
       const reader = new FileReader();
       reader.onload = () => {
-        const text = reader.result as string;
+        const rawText = reader.result as string;
+        const text = sanitizeSvgContent(rawText);
         setSvgContent(text);
         setFilePreview(text);
 

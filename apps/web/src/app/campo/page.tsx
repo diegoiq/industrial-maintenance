@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { 
   Camera, 
@@ -24,10 +24,16 @@ import {
   Trash2,
   CloudUpload,
   Compass,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Building2,
+  Activity,
+  Info,
+  Play,
+  Square
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import { pullAndReconcileFromCloud, pushFastSyncToCloud } from '../../lib/cloudSync';
+import { getSyncRequestHeaders, sanitizeSvgContent } from '../../lib/security';
 import { compressInspectionPhoto } from '../../lib/imageCompression';
 import { syncManager } from '../../lib/syncManager';
 import { SyncStatusBadge } from '../../components/campo/SyncStatusBadge';
@@ -52,8 +58,68 @@ import {
   Plano, 
   TipoElemento, 
   ZonaInspeccion,
-  HitoGeografico 
+  HitoGeografico,
+  EvaluacionCivilItem
 } from '../../types';
+
+const CORROSION_INFO: Record<string, { titulo: string; area: string; desc: string; color: string }> = {
+  'Ri 0': {
+    titulo: 'Ri 0 — Sin corrosión (Intacto)',
+    area: '0% oxidado',
+    desc: 'Recubrimiento y sustrato sanos, sin ampollas ni óxido visible.',
+    color: 'text-emerald-400 border-emerald-500/40 bg-emerald-950/40'
+  },
+  'Ri 1': {
+    titulo: 'Ri 1 — Muy leve / Puntual',
+    area: '~0.05% oxidado',
+    desc: 'Puntos aislados de óxido superficial o micro-ampollamiento incipiente.',
+    color: 'text-emerald-300 border-emerald-500/40 bg-emerald-950/30'
+  },
+  'Ri 2': {
+    titulo: 'Ri 2 — Leve / Moderado',
+    area: '~0.5% oxidado',
+    desc: 'Manchas de óxido localizadas en bordes, soldaduras o cantos vivos.',
+    color: 'text-lime-300 border-lime-500/40 bg-lime-950/30'
+  },
+  'Ri 3': {
+    titulo: 'Ri 3 — Medio / Extendido',
+    area: '~1% a 5% oxidado',
+    desc: 'Desprendimiento de pintura y corrosión activa superficial; requiere mantenimiento.',
+    color: 'text-amber-300 border-amber-500/40 bg-amber-950/40'
+  },
+  'Ri 4': {
+    titulo: 'Ri 4 — Severo / Generalizado',
+    area: '~8% a 25% oxidado',
+    desc: 'Óxido en escamas o picaduras (pitting); inicio de pérdida de espesor.',
+    color: 'text-orange-300 border-orange-500/40 bg-orange-950/40'
+  },
+  'Ri 5': {
+    titulo: 'Ri 5 — Muy Severo / Crítico',
+    area: '> 40% - 50% oxidado',
+    desc: 'Corrosión profunda, laminación o perforación; evaluar refuerzo o reemplazo.',
+    color: 'text-red-300 border-red-500/50 bg-red-950/50'
+  }
+};
+
+const CATALOGO_ELEMENTOS_CIVILES = [
+  { id: 'juntas', label: 'Juntas (Dilatación / Constructivas)' },
+  { id: 'tabiques', label: 'Tabiques / Muros de Contención' },
+  { id: 'columnas', label: 'Columnas / Pedestales de H°A°' },
+  { id: 'vigas', label: 'Vigas / Dinteles Civiles' },
+  { id: 'losas', label: 'Losas / Pisos Industriales' },
+  { id: 'bases_bombas', label: 'Bases de Bombas / Fundaciones' }
+];
+
+const PATOLOGIAS_CIVILES_SUGERIDAS = [
+  'Fisuración / Grietas',
+  'Desprendimiento (Spalling)',
+  'Armadura Expuesta / Oxidada',
+  'Falla de Sello en Junta',
+  'Grout Fisurado / Vibración',
+  'Ataque Químico / Eflorescencia',
+  'Humedad / Filtración Activa',
+  'Asentamiento / Desnivel'
+];
 
 export default function CampoPage() {
   const [areas, setAreas] = useState<Area[]>([]);
@@ -76,24 +142,36 @@ export default function CampoPage() {
   const [syncMessage, setSyncMessage] = useState('');
   const [viewMode, setViewMode] = useState<'zonas' | 'mapa'>('zonas');
 
-  // Coordenadas GPS Satelital de Terreno y proyección sobre el plano CAD
-  const [gpsData, setGpsData] = useState<{ lat: number; lng: number; precision_m: number; pixelX?: number; pixelY?: number } | null>(null);
+  // Coordenadas GPS Satelital de Terreno, seguimiento en vivo del recorrido y proyección sobre el plano CAD
+  const [gpsData, setGpsData] = useState<{ lat: number; lng: number; precision_m: number; pixelX?: number; pixelY?: number; timestamp?: string } | null>(null);
   const [isGettingGps, setIsGettingGps] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [isTrackingRoute, setIsTrackingRoute] = useState(false);
+  const [gpsRouteHistory, setGpsRouteHistory] = useState<{ lat: number; lng: number; precision_m: number; timestamp: string; pixelX?: number; pixelY?: number; zona_detectada?: string }[]>([]);
+  const watchIdRef = useRef<number | null>(null);
 
-  // Estados del formulario de inspección
+  // Estados del formulario de inspección (con opción de texto libre o personalizado)
   const [sustrato, setSustrato] = useState('acero_al_carbono');
+  const [customSustrato, setCustomSustrato] = useState('');
   const [recubrimiento, setRecubrimiento] = useState('epoxi_poliamida');
+  const [customRecubrimiento, setCustomRecubrimiento] = useState('');
   const [gradoCorrosion, setGradoCorrosion] = useState('Ri 3');
   const [porcentajeAfectado, setPorcentajeAfectado] = useState<number>(20);
   const [requiereReemplazo, setRequiereReemplazo] = useState(false);
   const [observaciones, setObservaciones] = useState('');
+
+  // Sub-sección de Evaluaciones Civiles (Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas y personalizados)
+  const [incluirEvaluacionCivil, setIncluirEvaluacionCivil] = useState(false);
+  const [itemsCiviles, setItemsCiviles] = useState<EvaluacionCivilItem[]>([]);
+  const [nuevoElementoCivilCustom, setNuevoElementoCivilCustom] = useState('');
+  const [notasCiviles, setNotasCiviles] = useState('');
 
   // Filtro de Cota y Modal de Reportar Hallazgo / Elemento o Hito dentro de la Zona
   const [cotaFiltro, setCotaFiltro] = useState<string>('todos');
   const [isFieldPinModalOpen, setIsFieldPinModalOpen] = useState(false);
   const [fieldTag, setFieldTag] = useState('');
   const [fieldDisciplina, setFieldDisciplina] = useState<TipoElemento>('acero_estructural');
+  const [customFieldDisciplina, setCustomFieldDisciplina] = useState('');
   const [fieldCota, setFieldCota] = useState<number>(146000);
   const [fieldDescripcion, setFieldDescripcion] = useState('');
 
@@ -177,6 +255,9 @@ export default function CampoPage() {
     return () => {
       window.removeEventListener('focus', onFocus);
       clearInterval(interval);
+      if (watchIdRef.current !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
     };
   }, []);
 
@@ -225,6 +306,41 @@ export default function CampoPage() {
   };
 
   // Capturar posición GPS física del inspector y proyectarla sobre el plano CAD para detectar en qué Zona está
+  const processGpsPosition = (pos: GeolocationPosition, isFromWatch: boolean = false) => {
+    const lat = Number(pos.coords.latitude.toFixed(6));
+    const lng = Number(pos.coords.longitude.toFixed(6));
+    const precision_m = Math.round(pos.coords.accuracy);
+    const pixelPos = latLngToPixel(lat, lng, geoCal);
+    const timestamp = new Date().toISOString();
+
+    const detectedZone = zonasDelPlano.find(z => isPointInPolygon(pixelPos, z.poligono_svg?.puntos || []));
+
+    const pointEntry = {
+      lat,
+      lng,
+      precision_m,
+      timestamp,
+      pixelX: pixelPos.x,
+      pixelY: pixelPos.y,
+      zona_detectada: detectedZone?.codigo
+    };
+
+    setGpsData(pointEntry);
+    setGpsRouteHistory(prev => {
+      const last = prev[prev.length - 1];
+      if (last && Math.abs(last.lat - lat) < 0.000015 && Math.abs(last.lng - lng) < 0.000015 && isFromWatch) {
+        return prev;
+      }
+      return [...prev, pointEntry];
+    });
+
+    if (detectedZone && (!isFromWatch || selectedZona?.id !== detectedZone.id)) {
+      handleSelectZonaForTour(detectedZone);
+      setSyncMessage(`📍 GPS ubicó al operario en Zona: ${detectedZone.codigo} (${detectedZone.nombre})`);
+      setTimeout(() => setSyncMessage(''), 4500);
+    }
+  };
+
   const handleCaptureGPS = () => {
     if (typeof window === 'undefined' || !navigator.geolocation) {
       setGpsError("Tu dispositivo no soporta geolocalización satelital.");
@@ -234,34 +350,83 @@ export default function CampoPage() {
     setGpsError(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const lat = Number(pos.coords.latitude.toFixed(6));
-        const lng = Number(pos.coords.longitude.toFixed(6));
-        const precision_m = Math.round(pos.coords.accuracy);
-        const pixelPos = latLngToPixel(lat, lng, geoCal);
-
-        setGpsData({
-          lat,
-          lng,
-          precision_m,
-          pixelX: pixelPos.x,
-          pixelY: pixelPos.y
-        });
-
-        // Verificar si el inspector está parado dentro de alguna de las Zonas del plano
-        const detectedZone = zonasDelPlano.find(z => isPointInPolygon(pixelPos, z.poligono_svg?.puntos || []));
-        if (detectedZone) {
-          handleSelectZonaForTour(detectedZone);
-          setSyncMessage(`📍 GPS te ubicó dentro de la Zona: ${detectedZone.codigo} (${detectedZone.nombre})`);
-          setTimeout(() => setSyncMessage(''), 4500);
-        }
-
+        processGpsPosition(pos, false);
         setIsGettingGps(false);
       },
       (err) => {
         setGpsError("Señal GPS débil o permiso denegado: " + err.message);
         setIsGettingGps(false);
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+    );
+  };
+
+  // Iniciar o detener seguimiento continuo de salida a relevamiento en campo
+  const handleToggleRouteTracking = () => {
+    if (typeof window === 'undefined' || !navigator.geolocation) {
+      setGpsError("Tu dispositivo no soporta geolocalización satelital.");
+      return;
+    }
+
+    if (isTrackingRoute) {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      setIsTrackingRoute(false);
+      setSyncMessage(`🛑 Recorrido finalizado (${gpsRouteHistory.length} posiciones GPS registradas).`);
+      setTimeout(() => setSyncMessage(''), 4000);
+    } else {
+      setGpsError(null);
+      setIsTrackingRoute(true);
+      handleCaptureGPS();
+      const id = navigator.geolocation.watchPosition(
+        (pos) => processGpsPosition(pos, true),
+        (err) => setGpsError("Aviso GPS en recorrido: " + err.message),
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+      );
+      watchIdRef.current = id;
+      setSyncMessage('🛰️ Salida a Relevamiento Activa: registrando posición del operario en campo en tiempo real.');
+      setTimeout(() => setSyncMessage(''), 4000);
+    }
+  };
+
+  // Gestión de ítems de Evaluación Civil (Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas y otros)
+  const handleToggleCivilElement = (elemLabel: string) => {
+    setItemsCiviles(prev => {
+      const exists = prev.some(i => i.elemento_civil === elemLabel);
+      if (exists) {
+        return prev.filter(i => i.elemento_civil !== elemLabel);
+      }
+      return [...prev, { elemento_civil: elemLabel, estado: 'regular', patologias: [], observacion: '' }];
+    });
+  };
+
+  const handleAddCustomCivilElement = () => {
+    const trimmed = nuevoElementoCivilCustom.trim();
+    if (!trimmed) return;
+    if (!itemsCiviles.some(i => i.elemento_civil.toLowerCase() === trimmed.toLowerCase())) {
+      setItemsCiviles(prev => [...prev, { elemento_civil: trimmed, estado: 'regular', patologias: [], observacion: '' }]);
+    }
+    setNuevoElementoCivilCustom('');
+  };
+
+  const handleUpdateCivilItem = (elemLabel: string, patch: Partial<EvaluacionCivilItem>) => {
+    setItemsCiviles(prev =>
+      prev.map(item => (item.elemento_civil === elemLabel ? { ...item, ...patch } : item))
+    );
+  };
+
+  const handleToggleCivilPatologia = (elemLabel: string, patologia: string) => {
+    setItemsCiviles(prev =>
+      prev.map(item => {
+        if (item.elemento_civil !== elemLabel) return item;
+        const has = item.patologias.includes(patologia);
+        return {
+          ...item,
+          patologias: has ? item.patologias.filter(p => p !== patologia) : [...item.patologias, patologia]
+        };
+      })
     );
   };
 
@@ -280,19 +445,29 @@ export default function CampoPage() {
 
     const autoGps = gpsData ? { lat: gpsData.lat, lng: gpsData.lng, precision_m: gpsData.precision_m } : pixelToLatLng(pinCoords.x, pinCoords.y, geoCal);
 
+    const resolvedTipo: TipoElemento = fieldDisciplina === 'otro_personalizado'
+      ? (customFieldDisciplina.trim().toLowerCase().replace(/\s+/g, '_') || 'hallazgo_personalizado')
+      : fieldDisciplina;
+
     const newId = `elem_field_${Date.now()}`;
     const newPin: Elemento = {
       id: newId,
       zona_id: targetZona?.id || 'general',
       tag_codigo: fieldTag.trim().toUpperCase(),
       codigo_equipo_erp: fieldDescripcion.trim() || undefined,
-      tipo_elemento: fieldDisciplina,
+      tipo_elemento: resolvedTipo,
       qr_token: `QR-FIELD-${Date.now().toString(36).toUpperCase()}`,
       coordenadas_pin: pinCoords,
       cota_nivel: targetZona?.cota_nivel || fieldCota,
       creado_en_campo: true,
       geometria_parametros: {
-        perfil: fieldDisciplina === 'parral_caneria' ? 'Pipe-Rack W8' : fieldDisciplina === 'soporte' ? 'Soporte Silleta UPN' : 'Hallazgo Campo',
+        perfil: fieldDisciplina === 'otro_personalizado'
+          ? (customFieldDisciplina.trim() || 'Elemento Personalizado')
+          : fieldDisciplina === 'parral_caneria'
+          ? 'Pipe-Rack W8'
+          : fieldDisciplina === 'soporte'
+          ? 'Soporte Silleta UPN'
+          : 'Hallazgo Campo',
         longitud_m: 3.0,
         m2_superficie: 8.5,
         peso_kg: 120
@@ -310,6 +485,7 @@ export default function CampoPage() {
     setIsFieldPinModalOpen(false);
     setFieldTag('');
     setFieldDescripcion('');
+    setCustomFieldDisciplina('');
   };
 
   // Manejo de captura de MÚLTIPLES fotos con compresión WebP automática
@@ -383,25 +559,51 @@ export default function CampoPage() {
       Math.round(((Math.max(40, porcentajeAfectado + 10) - porcentajeAfectado) / Math.max(1, tasaAvancePct)) * 12)
     );
 
+    const sustratoFinal = sustrato === 'otro_personalizado'
+      ? (customSustrato.trim() || 'Otro sustrato especificado en campo')
+      : sustrato;
+
+    const recubrimientoFinal = recubrimiento === 'otro_personalizado'
+      ? (customRecubrimiento.trim() || 'Otro recubrimiento especificado en campo')
+      : recubrimiento;
+
+    const haySeveroCivil = incluirEvaluacionCivil && itemsCiviles.some(i => i.estado === 'critico' || i.estado === 'severo');
+
     const nuevaInspeccion: Inspeccion = {
       id: inspeccionId,
       elemento_id: targetElemId,
       zona_id: selectedZona?.id,
       zona_codigo: selectedZona?.codigo,
-      inspector_nombre: 'Inspector de Campo',
+      inspector_nombre: 'Operario / Inspector de Campo',
       fecha_inspeccion: new Date().toISOString(),
       estado_sincronizacion: 'pendiente',
-      clasificacion_sustrato: sustrato,
-      clasificacion_recubrimiento: recubrimiento,
+      clasificacion_sustrato: sustratoFinal,
+      clasificacion_recubrimiento: recubrimientoFinal,
       grado_corrosion: gradoCorrosion,
       requiere_reemplazo: requiereReemplazo,
       porcentaje_afectado: porcentajeAfectado,
-      criticidad_calculada: requiereReemplazo ? 5 : gradoCorrosion === 'Ri 4' || gradoCorrosion === 'Ri 5' ? 4 : 3,
+      criticidad_calculada: requiereReemplazo ? 5 : (gradoCorrosion === 'Ri 4' || gradoCorrosion === 'Ri 5' || haySeveroCivil) ? 4 : 3,
       antiguedad_anios: antiguedadAnios,
       ultimo_revestimiento_anios: ultimoRevestimientoAnios,
       tasa_avance_anual_pct: tasaAvancePct,
       meses_ventana_intervencion: mesesVentanaIntervencion,
-      coordenadas_gps: gpsData ? { lat: gpsData.lat, lng: gpsData.lng, precision_m: gpsData.precision_m } : undefined,
+      coordenadas_gps: gpsData
+        ? {
+            lat: gpsData.lat,
+            lng: gpsData.lng,
+            precision_m: gpsData.precision_m,
+            timestamp: gpsData.timestamp || new Date().toISOString(),
+            en_recorrido: isTrackingRoute
+          }
+        : undefined,
+      historial_recorrido_gps: gpsRouteHistory.length > 0 ? gpsRouteHistory : undefined,
+      evaluacion_civil: incluirEvaluacionCivil && (itemsCiviles.length > 0 || notasCiviles.trim() !== '')
+        ? {
+            aplica: true,
+            items: itemsCiviles,
+            notas_civiles: notasCiviles.trim() || undefined
+          }
+        : undefined,
       requiere_andamio: requiereAndamioCampo,
       tipo_acceso_sugerido: tipoAccesoCampo,
       altura_andamio_m: alturaAndamioCampo,
@@ -457,7 +659,7 @@ export default function CampoPage() {
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       fetch('/api/sync-neon', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getSyncRequestHeaders(),
         body: JSON.stringify({
           zonas: await db.zonas.toArray(),
           elementos: await db.elementos.toArray(),
@@ -562,28 +764,67 @@ export default function CampoPage() {
             </div>
           </div>
 
-          {/* Barra GPS en Vivo para auto-detectar en qué Zona está parado el inspector */}
-          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center space-x-2">
-              <Compass className={`w-4 h-4 text-emerald-400 ${isGettingGps ? 'animate-spin' : ''}`} />
-              <div>
-                <span className="font-bold text-slate-200 block">
-                  {gpsData ? `📍 GPS: ${gpsData.lat}, ${gpsData.lng} (±${gpsData.precision_m}m)` : 'Ubicación Satelital en Planta'}
-                </span>
-                <span className="text-[10px] text-slate-400">
-                  {gpsData ? 'Proyectado sobre el Lay Out General' : 'Detecta automáticamente en cuál de las zonas estás parado'}
-                </span>
+          {/* Barra GPS en Vivo y Registro de Salida a Relevamiento del Operario en Campo */}
+          <div className="bg-slate-950 p-3 rounded-xl border border-emerald-500/40 space-y-2.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center space-x-2">
+                <Compass className={`w-5 h-5 text-emerald-400 ${isGettingGps || isTrackingRoute ? 'animate-spin' : ''}`} />
+                <div>
+                  <div className="flex items-center space-x-1.5">
+                    <span className="font-black text-slate-100">
+                      {isTrackingRoute ? '🛰️ Operario en Campo (Tracking GPS Activo)' : 'Posición GPS del Operario en Campo'}
+                    </span>
+                    {isTrackingRoute && (
+                      <span className="px-1.5 py-0.5 text-[9px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 rounded animate-pulse">
+                        EN RECORRIDO ({gpsRouteHistory.length} pts)
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[11px] font-mono text-emerald-400 block">
+                    {gpsData
+                      ? `Lat ${gpsData.lat}, Lng ${gpsData.lng} (±${gpsData.precision_m}m)${selectedZona ? ` · Zona: ${selectedZona.codigo}` : ''}`
+                      : 'Sin posición registrada aún — inicia salida o captura punto GPS'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-1.5">
+                <button
+                  type="button"
+                  onClick={handleToggleRouteTracking}
+                  className={`px-3 py-1.5 font-extrabold rounded-lg text-xs flex items-center space-x-1 shadow transition ${
+                    isTrackingRoute
+                      ? 'bg-red-600 hover:bg-red-500 text-white'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-black'
+                  }`}
+                >
+                  {isTrackingRoute ? <Square className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  <span>{isTrackingRoute ? 'Detener Recorrido' : 'Iniciar Salida a Campo'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCaptureGPS}
+                  disabled={isGettingGps}
+                  className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 font-bold rounded-lg text-xs flex items-center space-x-1 transition"
+                  title="Capturar posición puntual ahora"
+                >
+                  <Navigation className="w-3.5 h-3.5" />
+                  <span>{isGettingGps ? '...' : 'Capturar Punto'}</span>
+                </button>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={handleCaptureGPS}
-              disabled={isGettingGps}
-              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs flex items-center space-x-1 shadow transition"
-            >
-              <Navigation className="w-3.5 h-3.5" />
-              <span>{isGettingGps ? 'Ubicando...' : 'Ubicarme por GPS'}</span>
-            </button>
+
+            {gpsRouteHistory.length > 0 && (
+              <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400 font-mono">
+                <span>
+                  Bitácora de recorrido: <strong className="text-emerald-300">{gpsRouteHistory.length} coordenadas</strong> registradas en la salida
+                </span>
+                <span>
+                  Última marca: {new Date(gpsRouteHistory[gpsRouteHistory.length - 1].timestamp).toLocaleTimeString()}
+                </span>
+              </div>
+            )}
           </div>
           {gpsError && <p className="text-[11px] text-amber-400">{gpsError}</p>}
 
@@ -666,7 +907,7 @@ export default function CampoPage() {
                   className="w-full h-full object-contain"
                 >
                   {currentPlano.svg_content ? (
-                    <g dangerouslySetInnerHTML={{ __html: currentPlano.svg_content }} />
+                    <g dangerouslySetInnerHTML={{ __html: sanitizeSvgContent(currentPlano.svg_content) }} />
                   ) : (
                     (currentPlano.archivo_data_url || currentPlano.archivo_original_url) && (
                       <image
@@ -728,7 +969,21 @@ export default function CampoPage() {
                     );
                   })}
 
-                  {/* Punto Azul "Estás Aquí" del GPS del Inspector */}
+                  {/* Traza del Recorrido GPS del Operario en Campo */}
+                  {gpsRouteHistory.length > 1 && (
+                    <polyline
+                      fill="none"
+                      stroke="#10b981"
+                      strokeWidth={3 * Math.max(1, (currentPlano.dimensiones_viewbox?.width || 7680) / 900)}
+                      strokeDasharray={`${6 * Math.max(1, (currentPlano.dimensiones_viewbox?.width || 7680) / 900)},${4 * Math.max(1, (currentPlano.dimensiones_viewbox?.width || 7680) / 900)}`}
+                      points={gpsRouteHistory
+                        .filter(pt => pt.pixelX !== undefined && pt.pixelY !== undefined)
+                        .map(pt => `${pt.pixelX},${pt.pixelY}`)
+                        .join(' ')}
+                    />
+                  )}
+
+                  {/* Punto Verde "Operario Aquí" del GPS del Inspector */}
                   {gpsData?.pixelX && gpsData?.pixelY && (
                     <g>
                       <circle
@@ -976,15 +1231,30 @@ export default function CampoPage() {
             )}
           </div>
 
-          {/* Clasificación Técnica de Corrosión ISO 4628 */}
+          {/* Clasificación Técnica de Corrosión ISO 4628 + Libertad de Selección + Sub-sección Evaluaciones Civiles */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
-            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
-              Evaluación Técnica ({inspectionTargetMode === 'elemento' && selectedElemento ? `Activo: ${selectedElemento.tag_codigo}` : `Zona: ${selectedZona?.codigo || 'General'}`})
-            </span>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+              <div>
+                <span className="text-xs font-bold text-slate-200 uppercase tracking-wider block">
+                  Evaluación Técnica ({inspectionTargetMode === 'elemento' && selectedElemento ? `Activo: ${selectedElemento.tag_codigo}` : `Zona: ${selectedZona?.codigo || 'General'}`})
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  Seleccioná de la lista o elegí &quot;+ Otro / Especificar...&quot; para ingresar cualquier elemento libremente
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFieldPinModalOpen(true)}
+                className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-[11px] font-bold flex items-center space-x-1"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Nuevo Elemento Libre</span>
+              </button>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              <div>
-                <label className="text-slate-400 block mb-1">Sustrato Base</label>
+              <div className="space-y-1.5">
+                <label className="text-slate-400 block">Sustrato / Material Base</label>
                 <select
                   value={sustrato}
                   onChange={(e) => setSustrato(e.target.value)}
@@ -993,12 +1263,26 @@ export default function CampoPage() {
                   <option value="acero_al_carbono">Acero al Carbono Estructural</option>
                   <option value="acero_galvanizado">Acero Galvanizado en Caliente</option>
                   <option value="acero_inoxidable_304">Acero Inoxidable 304 / 316</option>
-                  <option value="hormigon_armado">Hormigón Industrial / Pedestales</option>
+                  <option value="hormigon_armado">Hormigón Armado / Civil</option>
+                  <option value="fundicion_hierro">Fundición / Carcasa de Bomba</option>
+                  <option value="prfv_fibra">PRFV / Fibra de Vidrio / Polímero</option>
+                  <option value="mamposteria_ladrillo">Mampostería / Tabique Cerámico</option>
+                  <option value="otro_personalizado">➕ Otro Sustrato / Especificar...</option>
                 </select>
+                {sustrato === 'otro_personalizado' && (
+                  <input
+                    type="text"
+                    value={customSustrato}
+                    onChange={(e) => setCustomSustrato(e.target.value)}
+                    placeholder="Escribí el sustrato o material libremente..."
+                    className="w-full bg-slate-950 border border-amber-500/70 rounded-lg p-2 text-xs text-white focus:outline-none"
+                    autoFocus
+                  />
+                )}
               </div>
 
-              <div>
-                <label className="text-slate-400 block mb-1">Sistema de Recubrimiento</label>
+              <div className="space-y-1.5">
+                <label className="text-slate-400 block">Sistema de Recubrimiento / Protección</label>
                 <select
                   value={recubrimiento}
                   onChange={(e) => setRecubrimiento(e.target.value)}
@@ -1007,32 +1291,71 @@ export default function CampoPage() {
                   <option value="epoxi_poliamida">Epoxi Poliamida + Poliuretano</option>
                   <option value="alquidico_sintetico">Esmalte Alquídico Sintético</option>
                   <option value="silicato_zinc">Silicato Inorgánico de Zinc</option>
-                  <option value="sin_recubrimiento">Sin Recubrimiento</option>
+                  <option value="epoxi_bituminoso">Epoxi Bituminoso / Alta Espesor</option>
+                  <option value="mortero_impermeable">Mortero Cementicio / Sellador Civil</option>
+                  <option value="aislacion_termica">Aislación Térmica c/ Chapa (CUI)</option>
+                  <option value="sin_recubrimiento">Sin Recubrimiento / Desnudo</option>
+                  <option value="otro_personalizado">➕ Otro Recubrimiento / Especificar...</option>
                 </select>
+                {recubrimiento === 'otro_personalizado' && (
+                  <input
+                    type="text"
+                    value={customRecubrimiento}
+                    onChange={(e) => setCustomRecubrimiento(e.target.value)}
+                    placeholder="Escribí el sistema de recubrimiento o protección..."
+                    className="w-full bg-slate-950 border border-amber-500/70 rounded-lg p-2 text-xs text-white focus:outline-none"
+                    autoFocus
+                  />
+                )}
               </div>
             </div>
 
-            <div>
-              <div className="flex justify-between items-center mb-1 text-xs">
-                <label className="text-slate-300 font-semibold">Grado de Corrosión (ISO 4628 / ASTM D610)</label>
+            {/* Grado de Corrosión con muy breve info explicativa */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <label className="text-slate-300 font-semibold flex items-center space-x-1">
+                  <Info className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Grado de Corrosión (ISO 4628 / ASTM D610)</span>
+                </label>
                 <span className="font-mono font-bold text-amber-400">{gradoCorrosion}</span>
               </div>
-              <div className="grid grid-cols-6 gap-1">
-                {['Ri 0', 'Ri 1', 'Ri 2', 'Ri 3', 'Ri 4', 'Ri 5'].map((grado) => (
-                  <button
-                    key={grado}
-                    type="button"
-                    onClick={() => setGradoCorrosion(grado)}
-                    className={`py-2 text-xs font-mono font-bold rounded-lg border transition ${
-                      gradoCorrosion === grado
-                        ? 'bg-amber-500 text-black border-amber-400'
-                        : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600'
-                    }`}
-                  >
-                    {grado}
-                  </button>
-                ))}
+
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                {(['Ri 0', 'Ri 1', 'Ri 2', 'Ri 3', 'Ri 4', 'Ri 5'] as const).map((grado) => {
+                  const info = CORROSION_INFO[grado];
+                  const active = gradoCorrosion === grado;
+                  return (
+                    <button
+                      key={grado}
+                      type="button"
+                      onClick={() => setGradoCorrosion(grado)}
+                      className={`py-2 px-1.5 text-xs rounded-lg border transition flex flex-col items-center justify-center ${
+                        active
+                          ? 'bg-amber-500 text-black border-amber-400 font-black shadow-md'
+                          : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600'
+                      }`}
+                    >
+                      <span className="font-mono font-bold">{grado}</span>
+                      <span className={`text-[9px] leading-tight mt-0.5 ${active ? 'text-black/80 font-bold' : 'text-slate-400'}`}>
+                        {info.area}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
+
+              {/* Breve info del grado seleccionado */}
+              {CORROSION_INFO[gradoCorrosion] && (
+                <div className={`p-2.5 rounded-xl border text-xs flex items-start justify-between gap-2 ${CORROSION_INFO[gradoCorrosion].color}`}>
+                  <div>
+                    <span className="font-bold block">{CORROSION_INFO[gradoCorrosion].titulo}</span>
+                    <span className="text-[11px] opacity-90">{CORROSION_INFO[gradoCorrosion].desc}</span>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-black/30 flex-shrink-0">
+                    {CORROSION_INFO[gradoCorrosion].area}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div>
@@ -1064,6 +1387,164 @@ export default function CampoPage() {
                 onChange={(e) => setRequiereReemplazo(e.target.checked)}
                 className="w-5 h-5 accent-red-500 rounded cursor-pointer"
               />
+            </div>
+
+            {/* SUB-SECCIÓN: EVALUACIONES CIVILES (Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas) */}
+            <div className="bg-slate-950 border border-amber-500/40 rounded-xl p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center space-x-2">
+                  <Building2 className="w-4 h-4 text-amber-400" />
+                  <div>
+                    <span className="text-xs font-black text-white uppercase tracking-wide block">
+                      Sub-sección: Evaluaciones Civiles y Hormigón
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas u otros elementos civiles
+                    </span>
+                  </div>
+                </div>
+                <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-900 px-2.5 py-1.5 rounded-lg border border-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={incluirEvaluacionCivil}
+                    onChange={(e) => setIncluirEvaluacionCivil(e.target.checked)}
+                    className="accent-amber-500 rounded"
+                  />
+                  <span className="text-xs font-bold text-amber-400">Evaluar Civil</span>
+                </label>
+              </div>
+
+              {incluirEvaluacionCivil && (
+                <div className="space-y-3 pt-2 border-t border-slate-800 text-xs">
+                  <div>
+                    <span className="text-[11px] text-slate-300 font-semibold block mb-1.5">
+                      1. Seleccioná los elementos civiles a relevar (o agregá uno propio):
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                      {CATALOGO_ELEMENTOS_CIVILES.map((cat) => {
+                        const isSelected = itemsCiviles.some(i => i.elemento_civil === cat.label);
+                        return (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => handleToggleCivilElement(cat.label)}
+                            className={`p-2 rounded-lg border text-left text-[11px] font-bold transition ${
+                              isSelected
+                                ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                                : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                            }`}
+                          >
+                            {isSelected ? '✓ ' : '+ '}{cat.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Input para agregar un elemento civil que no encuadre en la lista */}
+                    <div className="flex items-center gap-1.5 mt-2">
+                      <input
+                        type="text"
+                        value={nuevoElementoCivilCustom}
+                        onChange={(e) => setNuevoElementoCivilCustom(e.target.value)}
+                        placeholder="Otro elemento civil (ej: Canaleta, Trincheras, Foso, Pedestal...)"
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:border-amber-400 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomCivilElement}
+                        className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-lg text-xs flex-shrink-0"
+                      >
+                        + Agregar
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Tarjetas individuales por cada elemento civil seleccionado */}
+                  {itemsCiviles.length > 0 && (
+                    <div className="space-y-2.5">
+                      {itemsCiviles.map((item) => (
+                        <div key={item.elemento_civil} className="p-3 bg-slate-900 rounded-xl border border-slate-800 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-bold text-amber-300 text-xs">
+                              🏗️ {item.elemento_civil}
+                            </span>
+                            <div className="flex items-center space-x-1">
+                              {(['bueno', 'regular', 'severo', 'critico'] as const).map((est) => (
+                                <button
+                                  key={est}
+                                  type="button"
+                                  onClick={() => handleUpdateCivilItem(item.elemento_civil, { estado: est })}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border transition ${
+                                    item.estado === est
+                                      ? est === 'critico'
+                                        ? 'bg-red-600 text-white border-red-400'
+                                        : est === 'severo'
+                                        ? 'bg-orange-500 text-black border-orange-300'
+                                        : est === 'regular'
+                                        ? 'bg-amber-500 text-black border-amber-300'
+                                        : 'bg-emerald-500 text-black border-emerald-300'
+                                      : 'bg-slate-950 text-slate-400 border-slate-800'
+                                  }`}
+                                >
+                                  {est}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => handleToggleCivilElement(item.elemento_civil)}
+                                className="p-1 text-slate-500 hover:text-red-400"
+                                title="Quitar elemento civil"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Patologías rápidas */}
+                          <div className="flex flex-wrap gap-1">
+                            {PATOLOGIAS_CIVILES_SUGERIDAS.map((pat) => {
+                              const activePat = item.patologias.includes(pat);
+                              return (
+                                <button
+                                  key={pat}
+                                  type="button"
+                                  onClick={() => handleToggleCivilPatologia(item.elemento_civil, pat)}
+                                  className={`px-2 py-0.5 rounded-full text-[10px] border transition ${
+                                    activePat
+                                      ? 'bg-amber-500/25 border-amber-400 text-amber-200 font-bold'
+                                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  {activePat ? '✓ ' : ''}{pat}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <input
+                            type="text"
+                            value={item.observacion || ''}
+                            onChange={(e) => handleUpdateCivilItem(item.elemento_civil, { observacion: e.target.value })}
+                            placeholder={`Detalle específico en ${item.elemento_civil} (ej: fisura 3mm, sello desprendido, pernos flojos)...`}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-1.5 text-[11px] text-white focus:border-amber-400 focus:outline-none"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1">Notas Civiles Adicionales</label>
+                    <input
+                      type="text"
+                      value={notasCiviles}
+                      onChange={(e) => setNotasCiviles(e.target.value)}
+                      placeholder="Observación civil general (ej: ataque ácido en piso junto a base de bombas)..."
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>
@@ -1251,21 +1732,44 @@ export default function CampoPage() {
                 />
               </div>
 
-              <div>
-                <label className="text-slate-400 block mb-1">Tipo de Elemento / Hallazgo</label>
+              <div className="space-y-1.5">
+                <label className="text-slate-400 block">Tipo de Elemento / Hallazgo (Mecánico, Cañería, Civil o Libre)</label>
                 <select
                   value={fieldDisciplina}
                   onChange={(e: any) => setFieldDisciplina(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white"
                 >
-                  <option value="acero_estructural">Estructura de Acero (Viga / Columna)</option>
-                  <option value="parral_caneria">Parral de Cañerías (Pipe-Rack)</option>
-                  <option value="soporte">Soporte de Cañería / Silleta</option>
-                  <option value="caneria">Cañería de Proceso / Vapor</option>
-                  <option value="columna_hormigon">Columna / Pedestal de Hormigón</option>
-                  <option value="baranda">Baranda / Pasarela Grating</option>
-                  <option value="tanque">Tanque / Clarificador / Equipo</option>
+                  <optgroup label="Estructuras Metálicas y Equipos">
+                    <option value="acero_estructural">Estructura de Acero (Viga / Columna)</option>
+                    <option value="parral_caneria">Parral de Cañerías (Pipe-Rack)</option>
+                    <option value="soporte">Soporte de Cañería / Silleta</option>
+                    <option value="caneria">Cañería de Proceso / Vapor</option>
+                    <option value="baranda">Baranda / Pasarela Grating</option>
+                    <option value="tanque">Tanque / Clarificador / Equipo</option>
+                  </optgroup>
+                  <optgroup label="Elementos Civiles y Hormigón">
+                    <option value="junta_dilatacion">Junta Civil / Junta de Dilatación</option>
+                    <option value="tabique">Tabique / Muro de Contención</option>
+                    <option value="columna_hormigon">Columna / Pedestal de Hormigón</option>
+                    <option value="viga_hormigon">Viga / Dintel de Hormigón</option>
+                    <option value="losa">Losa / Piso Industrial</option>
+                    <option value="base_bomba">Base de Bomba / Fundación</option>
+                  </optgroup>
+                  <optgroup label="Personalizado">
+                    <option value="otro_personalizado">➕ Otro Elemento (Escribir libremente...)</option>
+                  </optgroup>
                 </select>
+
+                {fieldDisciplina === 'otro_personalizado' && (
+                  <input
+                    type="text"
+                    value={customFieldDisciplina}
+                    onChange={(e) => setCustomFieldDisciplina(e.target.value)}
+                    placeholder="Especificá el tipo de elemento (ej: Bandeja portacables, Chimenea, Válvula...)"
+                    className="w-full bg-slate-950 border border-amber-500/80 rounded-lg p-2.5 text-white focus:outline-none"
+                    required
+                  />
+                )}
               </div>
 
               <div>
