@@ -20,7 +20,8 @@ import {
 } from 'lucide-react';
 import { db } from '../../../lib/db';
 import { INITIAL_PARAMETROS } from '../../../lib/mockData';
-import { ParametroCubicacion } from '../../../types';
+import { ParametroCubicacion, ZonaInspeccion, Inspeccion, Plano } from '../../../types';
+import { calculatePolygonAreaM2, getOrInitGeoreferencia } from '../../../lib/georeferenceEngine';
 import {
   MaterialCatalogItem,
   MaterialCategoria,
@@ -52,7 +53,11 @@ export default function ParametrosCubicacionPage() {
   const [newMatPeso, setNewMatPeso] = useState<number>(20);
   const [newMatHh, setNewMatHh] = useState<number>(1.5);
 
-  // Simulador Dual: Metálico vs Civil
+  // Simulador Dual conectado a Zonas e Inspecciones Reales
+  const [zonasReales, setZonasReales] = useState<ZonaInspeccion[]>([]);
+  const [planosReales, setPlanosReales] = useState<Plano[]>([]);
+  const [inspeccionesReales, setInspeccionesReales] = useState<Inspeccion[]>([]);
+  const [selectedZonaSimId, setSelectedZonaSimId] = useState<string>('manual');
   const [simDisciplina, setSimDisciplina] = useState<'metalico' | 'civil'>('metalico');
   const [selectedMaterialCode, setSelectedMaterialCode] = useState<string>('W12X50');
   const [cantidadUnidad, setCantidadUnidad] = useState<number>(7.2); // metros en perfiles o m2/ml/m3 en civil
@@ -67,7 +72,7 @@ export default function ParametrosCubicacionPage() {
   const [severidadDeterioro, setSeveridadDeterioro] = useState<number>(4);
   const [criticidadActivo, setCriticidadActivo] = useState<number>(5);
 
-  // Cargar parámetros reales desde IndexedDB + Catálogo de Materiales
+  // Cargar parámetros reales desde IndexedDB + Catálogo de Materiales + Zonas Reales
   useEffect(() => {
     const init = async () => {
       let storedParams = await db.parametros.toArray();
@@ -79,9 +84,50 @@ export default function ParametrosCubicacionPage() {
       }
       setParametros(storedParams);
       setCatalog(loadMaterialsCatalog());
+
+      const [loadedZonas, loadedPlanos, loadedInspecciones] = await Promise.all([
+        db.zonas.toArray(),
+        db.planos.toArray(),
+        db.inspecciones.toArray()
+      ]);
+      setZonasReales(loadedZonas);
+      setPlanosReales(loadedPlanos);
+      setInspeccionesReales(loadedInspecciones);
     };
     init();
   }, []);
+
+  // Al elegir una Zona real de la planta, carga automáticamente sus m², andamios, % afectado y severidad de campo
+  const handleSelectZonaForCubicacion = (zonaId: string) => {
+    setSelectedZonaSimId(zonaId);
+    if (zonaId === 'manual') return;
+
+    const zona = zonasReales.find(z => z.id === zonaId);
+    if (!zona) return;
+
+    const plano = planosReales.find(p => p.id === zona.plano_id);
+    const geoCal = getOrInitGeoreferencia(plano);
+    const calcM2 = calculatePolygonAreaM2(zona.poligono_svg?.puntos || [], geoCal);
+    const m2Real = zona.superficie_estimada_m2 && zona.superficie_estimada_m2 > 0 ? zona.superficie_estimada_m2 : (calcM2 || 250);
+
+    const inspZona = inspeccionesReales.filter(i => i.zona_id === zona.id || i.elemento_id === `ZONA:${zona.codigo}`);
+    const ultimaInsp = inspZona[0];
+
+    const grado = ultimaInsp?.grado_corrosion || (zona.estado_salud_apriori === 'critico' ? 'Ri 5' : zona.estado_salud_apriori === 'malo' ? 'Ri 4' : 'Ri 3');
+    const pct = ultimaInsp ? ultimaInsp.porcentaje_afectado : (zona.estado_salud_apriori === 'critico' ? 60 : zona.estado_salud_apriori === 'malo' ? 40 : zona.estado_salud_apriori === 'bueno' ? 15 : 25);
+
+    setM2SuperficieManual(Math.round(m2Real));
+    setCantidadUnidad(Math.round(m2Real * 0.25));
+    setEnvolventeM3(zona.nivel_acceso_andamio?.envolvente_m3 || 180);
+    setAlturaAccesoM(zona.nivel_acceso_andamio?.altura_mts || 6.5);
+    setGradoCorrosion(grado);
+    setPorcentajeAfectado(pct);
+    setRequiereReemplazo(!!ultimaInsp?.requiere_reemplazo || zona.estado_salud_apriori === 'critico');
+
+    // Conecta automáticamente la severidad de la Matriz de Criticidad con el grado ISO 4628 de campo
+    const sevFromRi = grado.includes('5') ? 5 : grado.includes('4') ? 4 : grado.includes('3') ? 3 : grado.includes('2') ? 2 : 1;
+    setSeveridadDeterioro(sevFromRi);
+  };
 
   const notify = (msg: string) => {
     setSaveNotice(msg);
@@ -609,15 +655,36 @@ export default function ParametrosCubicacionPage() {
         </div>
       </div>
 
-      {/* SECCIÓN 3: SIMULADOR PARAMÉTRICO DUAL (METÁLICO + CIVIL) */}
+      {/* SECCIÓN 3: CUBICADOR REAL POR ZONA RELEVADA & SIMULADOR DUAL (METÁLICO + CIVIL) */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
-          <div className="flex items-center space-x-2">
-            <Calculator className="w-5 h-5 text-sky-400" />
-            <h3 className="text-base font-bold text-white">Simulador Paramétrico Dual (Metálico & Civil)</h3>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <div className="flex items-center space-x-2">
+              <Calculator className="w-5 h-5 text-sky-400" />
+              <h3 className="text-base font-bold text-white">Cubicador Paramétrico (Conectado a Zonas y Relevamientos Reales)</h3>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Elige una Zona real de tu planta para calcular sus metrados físicos y costos en USD según lo relevado en campo, o simula manualmente.
+            </p>
           </div>
 
-          <div className="flex items-center space-x-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            {zonasReales.length > 0 && (
+              <select
+                value={selectedZonaSimId}
+                onChange={(e) => handleSelectZonaForCubicacion(e.target.value)}
+                className="bg-slate-950 border border-emerald-500/60 text-emerald-300 font-mono font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none"
+              >
+                <option value="manual">🧪 Modo Simulación Manual</option>
+                {zonasReales.map(z => (
+                  <option key={z.id} value={z.id}>
+                    📍 Cargar Zona Real: {z.codigo} — {z.nombre}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <div className="flex items-center space-x-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
             <button
               type="button"
               onClick={() => {
@@ -644,6 +711,7 @@ export default function ParametrosCubicacionPage() {
               <Building2 className="w-3.5 h-3.5" />
               <span>Civil / Hormigón / Juntas</span>
             </button>
+          </div>
           </div>
         </div>
 

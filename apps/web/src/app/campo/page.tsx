@@ -42,6 +42,7 @@ import {
 } from '../../lib/cloudSync';
 import { getSyncRequestHeaders, sanitizeSvgContent } from '../../lib/security';
 import { compressInspectionPhoto } from '../../lib/imageCompression';
+import { loadMaterialsCatalog, MaterialCatalogItem } from '../../lib/materialsCatalog';
 import { syncManager } from '../../lib/syncManager';
 import { SyncStatusBadge } from '../../components/campo/SyncStatusBadge';
 import { VectorAnnotationCanvas } from '../../components/campo/VectorAnnotationCanvas';
@@ -203,9 +204,11 @@ export default function CampoPage() {
   const [lastCompressionRatio, setLastCompressionRatio] = useState<number | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [inspeccionesLocales, setInspeccionesLocales] = useState<Inspeccion[]>([]);
+  const [catalogMaterials, setCatalogMaterials] = useState<MaterialCatalogItem[]>([]);
   const [inspectorNombreActivo, setInspectorNombreActivo] = useState<string>('Operario / Inspector de Campo');
 
   useEffect(() => {
+    setCatalogMaterials(loadMaterialsCatalog());
     try {
       const saved = window.localStorage.getItem('im_user_profile');
       if (saved) {
@@ -1325,6 +1328,17 @@ export default function CampoPage() {
                   <option value="fundicion_hierro">Fundición / Carcasa de Bomba</option>
                   <option value="prfv_fibra">PRFV / Fibra de Vidrio / Polímero</option>
                   <option value="mamposteria_ladrillo">Mampostería / Tabique Cerámico</option>
+                  {catalogMaterials.filter(m => m.categoria === 'perfil_metalico' || m.categoria === 'civil_hormigon').length > 0 && (
+                    <optgroup label="Catálogo Metálico / Civil (Excel USD)">
+                      {catalogMaterials
+                        .filter(m => m.categoria === 'perfil_metalico' || m.categoria === 'civil_hormigon')
+                        .map(m => (
+                          <option key={m.id} value={m.codigo}>
+                            {m.codigo} — {m.nombre}
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
                   <option value="otro_personalizado">➕ Otro Sustrato / Especificar...</option>
                 </select>
                 {sustrato === 'otro_personalizado' && (
@@ -1353,6 +1367,17 @@ export default function CampoPage() {
                   <option value="mortero_impermeable">Mortero Cementicio / Sellador Civil</option>
                   <option value="aislacion_termica">Aislación Térmica c/ Chapa (CUI)</option>
                   <option value="sin_recubrimiento">Sin Recubrimiento / Desnudo</option>
+                  {catalogMaterials.filter(m => m.categoria === 'pintura_recubrimiento').length > 0 && (
+                    <optgroup label="Esquemas del Catálogo (Excel USD)">
+                      {catalogMaterials
+                        .filter(m => m.categoria === 'pintura_recubrimiento')
+                        .map(m => (
+                          <option key={m.id} value={m.codigo}>
+                            {m.codigo} — {m.nombre}
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
                   <option value="otro_personalizado">➕ Otro Recubrimiento / Especificar...</option>
                 </select>
                 {recubrimiento === 'otro_personalizado' && (
@@ -1479,7 +1504,12 @@ export default function CampoPage() {
                       1. Seleccioná los elementos civiles a relevar (o agregá uno propio):
                     </span>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                      {CATALOGO_ELEMENTOS_CIVILES.map((cat) => {
+                      {[
+                        ...CATALOGO_ELEMENTOS_CIVILES,
+                        ...catalogMaterials
+                          .filter(m => m.categoria === 'civil_hormigon')
+                          .map(m => ({ id: m.id, label: `${m.codigo}: ${m.nombre}` }))
+                      ].map((cat) => {
                         const isSelected = itemsCiviles.some(i => i.elemento_civil === cat.label);
                         return (
                           <button
@@ -1813,6 +1843,17 @@ export default function CampoPage() {
                     <option value="losa">Losa / Piso Industrial</option>
                     <option value="base_bomba">Base de Bomba / Fundación</option>
                   </optgroup>
+                  {catalogMaterials.filter(m => m.categoria === 'perfil_metalico' || m.categoria === 'civil_hormigon').length > 0 && (
+                    <optgroup label="Desde Lista de Precios Excel (Metálico / Civil)">
+                      {catalogMaterials
+                        .filter(m => m.categoria === 'perfil_metalico' || m.categoria === 'civil_hormigon')
+                        .map(m => (
+                          <option key={m.id} value={m.codigo}>
+                            {m.codigo} — {m.nombre}
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
                   <optgroup label="Personalizado">
                     <option value="otro_personalizado">➕ Otro Elemento (Escribir libremente...)</option>
                   </optgroup>
