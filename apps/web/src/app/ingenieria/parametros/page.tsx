@@ -16,12 +16,14 @@ import {
   Building2,
   Wrench,
   RotateCcw,
-  X
+  X,
+  Save
 } from 'lucide-react';
 import { db } from '../../../lib/db';
 import { INITIAL_PARAMETROS } from '../../../lib/mockData';
 import { ParametroCubicacion, ZonaInspeccion, Inspeccion, Plano } from '../../../types';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia } from '../../../lib/georeferenceEngine';
+import { pushFastSyncToCloud, markLocalEntityPendingPush } from '../../../lib/cloudSync';
 import {
   MaterialCatalogItem,
   MaterialCategoria,
@@ -127,6 +129,33 @@ export default function ParametrosCubicacionPage() {
     // Conecta automáticamente la severidad de la Matriz de Criticidad con el grado ISO 4628 de campo
     const sevFromRi = grado.includes('5') ? 5 : grado.includes('4') ? 4 : grado.includes('3') ? 3 : grado.includes('2') ? 2 : 1;
     setSeveridadDeterioro(sevFromRi);
+  };
+
+  const handleApplyMatrixToZona = async () => {
+    if (selectedZonaSimId === 'manual') return;
+    const zona = zonasReales.find(z => z.id === selectedZonaSimId);
+    if (!zona) return;
+
+    const nuevaSalud: 'critico' | 'malo' | 'regular' | 'bueno' =
+      valorCriticidad >= 16 ? 'critico' : valorCriticidad >= 9 ? 'malo' : valorCriticidad >= 4 ? 'regular' : 'bueno';
+
+    const updatedZona: ZonaInspeccion = {
+      ...zona,
+      estado_salud_apriori: nuevaSalud,
+      nivel_acceso_andamio: {
+        altura_mts: zona.nivel_acceso_andamio?.altura_mts || 6.5,
+        envolvente_m3: zona.nivel_acceso_andamio?.envolvente_m3 || 180,
+        complejidad: zona.nivel_acceso_andamio?.complejidad || 'media',
+        ...zona.nivel_acceso_andamio,
+        requiere_parada: valorCriticidad >= 16 ? true : !!zona.nivel_acceso_andamio?.requiere_parada
+      }
+    };
+
+    markLocalEntityPendingPush('zona', updatedZona.id);
+    await db.zonas.put(updatedZona);
+    setZonasReales(prev => prev.map(z => (z.id === updatedZona.id ? updatedZona : z)));
+    pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: true });
+    notify(`Prioridad (${prioridadIntervencion.etiqueta}) guardada en Zona "${updatedZona.codigo}" y sincronizada.`);
   };
 
   const notify = (msg: string) => {
@@ -652,6 +681,17 @@ export default function ParametrosCubicacionPage() {
             <span className="block text-[10px] opacity-80 uppercase">Prioridad Calculada:</span>
             <span className="text-sm">{prioridadIntervencion.etiqueta}</span>
           </div>
+
+          {selectedZonaSimId !== 'manual' && (
+            <button
+              type="button"
+              onClick={handleApplyMatrixToZona}
+              className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg flex items-center justify-center space-x-1.5 shadow transition"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Guardar Prioridad en Zona y Presupuesto</span>
+            </button>
+          )}
         </div>
       </div>
 
