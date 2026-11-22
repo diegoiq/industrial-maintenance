@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { db } from '../../../lib/db';
 import { getSyncRequestHeaders } from '../../../lib/security';
+import { pushFastSyncToCloud } from '../../../lib/cloudSync';
 import { ZonaInspeccion, Inspeccion, Elemento } from '../../../types';
 import { compressInspectionPhoto } from '../../../lib/imageCompression';
 
@@ -29,6 +30,7 @@ export default function DiagnosticoIAPage() {
   const [isValidated, setIsValidated] = useState(false);
   const [validationNote, setValidationNote] = useState('');
   const [aiDiagnosis, setAiDiagnosis] = useState<any | null>(null);
+  const [analysisModeNotice, setAnalysisModeNotice] = useState<string | null>(null);
 
   const loadData = async () => {
     let loadedZonas = await db.zonas.toArray();
@@ -83,37 +85,92 @@ export default function DiagnosticoIAPage() {
     setCustomTestPhoto(compressed.dataUrl);
   };
 
-  // Generar Pre-Diagnóstico Normativo ISO 4628 / ASTM D610 para la Zona o Inspección seleccionada
+  // Generar Pre-Diagnóstico Normativo ISO 4628 / ASTM D610 (Intenta Gemini Vision real, con respaldo local offline)
   const handleRunAIAnalysis = async () => {
     if (!currentZona) return;
     setIsAnalyzing(true);
     setIsValidated(false);
+    setAnalysisModeNotice(null);
 
-    await new Promise(r => setTimeout(r, 900));
-
-    const grado = activeInspeccion?.grado_corrosion || (currentZona.estado_salud_apriori === 'critico' ? 'Ri 5' : currentZona.estado_salud_apriori === 'malo' ? 'Ri 4' : 'Ri 3');
+    const grado =
+      activeInspeccion?.grado_corrosion ||
+      (currentZona.estado_salud_apriori === 'critico' ? 'Ri 5' : currentZona.estado_salud_apriori === 'malo' ? 'Ri 4' : 'Ri 3');
     const pct = activeInspeccion?.porcentaje_afectado || (grado === 'Ri 5' ? 50 : grado === 'Ri 4' ? 30 : 18);
-    const disciplinasStr = (currentZona.disciplinas_involucradas || ['estructuras_acero']).map(d => d.replace(/_/g, ' ')).join(', ');
+    const disciplinasStr = (currentZona.disciplinas_involucradas || ['estructuras_acero'])
+      .map(d => d.replace(/_/g, ' '))
+      .join(', ');
+
+    try {
+      if (activePhotoUrl && typeof navigator !== 'undefined' && navigator.onLine) {
+        const res = await fetch('/api/ai/analyze', {
+          method: 'POST',
+          headers: getSyncRequestHeaders(),
+          body: JSON.stringify({
+            imageUrl: activePhotoUrl,
+            zonaCodigo: currentZona.codigo,
+            zonaNombre: currentZona.nombre,
+            cotaM: Number((Number(currentZona.cota_nivel || 146000) / 1000).toFixed(1)),
+            superficieM2: currentZona.superficie_estimada_m2 || 250,
+            andamioM3: currentZona.nivel_acceso_andamio?.envolvente_m3 || 180,
+            disciplinas: disciplinasStr,
+            gradoCampo: grado,
+            porcentajeCampo: pct,
+            observacionesCampo: activeInspeccion?.observaciones || '',
+            evaluacionCivil: activeInspeccion?.evaluacion_civil || null
+          })
+        });
+
+        const json = await res.json();
+        if (json.success && json.diagnosis) {
+          setAiDiagnosis(json.diagnosis);
+          setAnalysisModeNotice(`✨ Análisis Visual Real completado con ${json.model || 'Gemini Vision'}`);
+          setValidationNote(
+            `Aprobado diagnóstico visual IA para Zona ${currentZona.codigo} (${grado}). Incorporar al Informe Técnico.`
+          );
+          setIsAnalyzing(false);
+          return;
+        }
+        if (json.reason) {
+          setAnalysisModeNotice(`⚙️ Motor Normativo Local (${json.reason})`);
+        }
+      } else {
+        setAnalysisModeNotice('⚙️ Motor Normativo Local (Sin fotografía adjunta o modo offline)');
+      }
+    } catch {
+      setAnalysisModeNotice('⚙️ Motor Normativo Local (Respaldo offline)');
+    }
+
+    await new Promise(r => setTimeout(r, 500));
 
     const generated = {
       status: 'success',
-      human_in_the_loop_notice: 'Pre-diagnóstico preliminar asistido por IA. Requiere validación de Ingeniería antes de liberar orden de trabajo SAP PM.',
+      mode: 'reglas_locales',
+      human_in_the_loop_notice:
+        'Pre-diagnóstico preliminar asistido por reglas normativas. Requiere validación de Ingeniería antes de liberar orden de trabajo SAP PM.',
       evaluacion_normativa: {
         norma_referencia: 'ISO 4628-3 / ASTM D610 / ISO 12944',
         grado_corrosion_estimado: `${grado} (Superficie afectada estimada: ${pct}%)`,
-        tipo_morfologia: grado === 'Ri 4' || grado === 'Ri 5'
-          ? 'Corrosión laminar y ampollamiento con pérdida de adherencia del esquema epoxi en bordes y uniones'
-          : 'Oxidación superficial localizada y degradación de capa de terminación por ambiente húmedo industrial',
-        riesgo_perdida_seccion: grado === 'Ri 5' ? 'Crítico (>25% pérdida de espesor)' : grado === 'Ri 4' ? 'Moderado-Alto (Evaluar pérdida localizada)' : 'Bajo (Sin compromiso estructural primario)',
-        ensayo_complementario_sugerido: grado === 'Ri 4' || grado === 'Ri 5'
-          ? 'Medición de espesor residual por Ultrasonido (UT) y prueba de adherencia Pull-Off (ASTM D4541)'
-          : 'Control de espesor de película seca (EPS) y ensayo de discontinuidad visual'
+        tipo_morfologia:
+          grado === 'Ri 4' || grado === 'Ri 5'
+            ? 'Corrosión laminar y ampollamiento con pérdida de adherencia del esquema epoxi en bordes y uniones'
+            : 'Oxidación superficial localizada y degradación de capa de terminación por ambiente húmedo industrial',
+        riesgo_perdida_seccion:
+          grado === 'Ri 5'
+            ? 'Crítico (>25% pérdida de espesor)'
+            : grado === 'Ri 4'
+            ? 'Moderado-Alto (Evaluar pérdida localizada)'
+            : 'Bajo (Sin compromiso estructural primario)',
+        ensayo_complementario_sugerido:
+          grado === 'Ri 4' || grado === 'Ri 5'
+            ? 'Medición de espesor residual por Ultrasonido (UT) y prueba de adherencia Pull-Off (ASTM D4541)'
+            : 'Control de espesor de película seca (EPS) y ensayo de discontinuidad visual'
       },
       sugerencia_intervencion: {
         requiere_reemplazo_estructural: grado === 'Ri 5',
-        sistema_recomendado: grado === 'Ri 4' || grado === 'Ri 5'
-          ? 'Limpieza por chorreado abrasivo Sa 2½ (o preparación mecánica St3 en zonas restringidas) + Imprimación Epoxi Rico en Zinc (75 µm) + Barrera Epoxi Mastic Alto Espesor (150 µm) + Poliuretano Alifático (60 µm)'
-          : 'Hidrolavado de alta presión + Limpieza mecánica puntual St3 + Parcheo con Epoxi Mastic Surface Tolerant (125 µm) + Capa de sello Poliuretano'
+        sistema_recomendado:
+          grado === 'Ri 4' || grado === 'Ri 5'
+            ? 'Limpieza por chorreado abrasivo Sa 2½ (o preparación mecánica St3 en zonas restringidas) + Imprimación Epoxi Rico en Zinc (75 µm) + Barrera Epoxi Mastic Alto Espesor (150 µm) + Poliuretano Alifático (60 µm)'
+            : 'Hidrolavado de alta presión + Limpieza mecánica puntual St3 + Parcheo con Epoxi Mastic Surface Tolerant (125 µm) + Capa de sello Poliuretano'
       },
       descripcion_tecnica_automatica:
         `En el sector [${currentZona.codigo} - ${currentZona.nombre}] (Cota +${(Number(currentZona.cota_nivel || 146000) / 1000).toFixed(1)} m, disciplinas: ${disciplinasStr}), ` +
@@ -128,7 +185,7 @@ export default function DiagnosticoIAPage() {
     setIsAnalyzing(false);
   };
 
-  // Guardar validación firmada en la inspección / zona
+  // Guardar validación firmada en la inspección / zona y sincronizar con Neon
   const handleValidateAsEngineer = async () => {
     if (!currentZona || !aiDiagnosis) return;
     setIsValidated(true);
@@ -146,7 +203,6 @@ export default function DiagnosticoIAPage() {
       };
       await db.inspecciones.put(updatedInsp);
     } else {
-      // Crear registro de pre-diagnóstico de gabinete para la zona
       const newInsp: Inspeccion = {
         id: `insp_ia_${Date.now()}`,
         elemento_id: `ZONA:${currentZona.codigo}`,
@@ -178,6 +234,7 @@ export default function DiagnosticoIAPage() {
       };
       await db.inspecciones.put(newInsp);
     }
+    await pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: false, authoritativeHitos: false });
     await loadData();
   };
 
@@ -304,9 +361,16 @@ export default function DiagnosticoIAPage() {
                   <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
                 )}
                 <div className="space-y-1 text-xs">
-                  <span className="font-black uppercase tracking-wider block">
-                    {isValidated ? 'DIAGNÓSTICO VALIDADO E INCORPORADO AL INFORME' : 'GUARDARRAÍL HUMAN-IN-THE-LOOP'}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-black uppercase tracking-wider">
+                      {isValidated ? 'DIAGNÓSTICO VALIDADO E INCORPORADO AL INFORME' : 'GUARDARRAÍL HUMAN-IN-THE-LOOP'}
+                    </span>
+                    {analysisModeNotice && (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/40 border border-white/15">
+                        {analysisModeNotice}
+                      </span>
+                    )}
+                  </div>
                   <p className="opacity-90">
                     {isValidated
                       ? `Validado por Ingeniería para la zona ${currentZona?.codigo}. Ya forma parte del Informe Preliminar.`

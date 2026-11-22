@@ -397,6 +397,28 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
                       </p>
                     )}
 
+                    {insp.diagnostico_ia?.evaluacion_normativa && (
+                      <div className="p-2.5 bg-purple-950/30 print:bg-gray-100 rounded-lg border border-purple-500/40 print:border-gray-300 space-y-1">
+                        <span className="text-[10px] font-mono font-bold uppercase text-purple-300 print:text-purple-900 block">
+                          🤖 Dictamen Técnico Validado (IA + Ingeniería) — {insp.diagnostico_ia.evaluacion_normativa.norma_referencia}
+                        </span>
+                        <p className="text-[11px] text-slate-200 print:text-black">
+                          <strong>Morfología:</strong> {insp.diagnostico_ia.evaluacion_normativa.tipo_morfologia} ·{' '}
+                          <strong>Ensayo Sugerido:</strong> {insp.diagnostico_ia.evaluacion_normativa.ensayo_complementario_sugerido}
+                        </p>
+                        {insp.diagnostico_ia.sugerencia_intervencion?.sistema_recomendado && (
+                          <p className="text-[11px] text-slate-300 print:text-black">
+                            <strong>Esquema Recomendado:</strong> {insp.diagnostico_ia.sugerencia_intervencion.sistema_recomendado}
+                          </p>
+                        )}
+                        {insp.diagnostico_ia.nota_validacion && (
+                          <p className="text-[10px] text-emerald-300 print:text-emerald-800 font-mono">
+                            ✓ Validado: {insp.diagnostico_ia.nota_validacion}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     {insp.fotos && insp.fotos.length > 0 && (
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                         {insp.fotos.map((f, idx) => (
