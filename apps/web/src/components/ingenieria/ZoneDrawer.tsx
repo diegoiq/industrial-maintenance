@@ -1,15 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   QrCode, 
-  Calculator, 
-  ShieldAlert, 
-  CheckCircle, 
-  HardHat, 
-  FileSpreadsheet, 
-  Ruler, 
   Layers, 
   Map, 
   Upload, 
@@ -17,13 +11,26 @@ import {
   Plus,
   Settings,
   Lock,
-  Pencil
+  Pencil,
+  Ruler,
+  Globe,
+  ExternalLink,
+  Check
 } from 'lucide-react';
-import { ZonaInspeccion, Elemento, EstadoSemaforo, Plano } from '../../types';
+import { ZonaInspeccion, Elemento, EstadoSemaforo, Plano, HitoGeografico } from '../../types';
+import { 
+  getOrInitGeoreferencia, 
+  pixelToLatLng, 
+  getPolygonCentroid, 
+  calculatePolygonAreaM2, 
+  calculatePolygonPerimeterM 
+} from '../../lib/georeferenceEngine';
 
 interface ZoneDrawerProps {
   zona?: ZonaInspeccion;
   elemento?: Elemento;
+  currentPlano?: Plano;
+  hitos?: HitoGeografico[];
   planos?: Plano[];
   isEditingPolygon?: boolean;
   onClose: () => void;
@@ -35,24 +42,86 @@ interface ZoneDrawerProps {
   onDeleteZone?: (zonaId: string) => void;
   onToggleEditPolygon?: () => void;
   onOpenEditZoneModal?: (zona: ZonaInspeccion) => void;
+  onUpdateZoneData?: (updatedZona: ZonaInspeccion) => void;
+  onUpdateElementoData?: (updatedElem: Elemento) => void;
 }
 
 export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
   zona,
   elemento,
+  currentPlano,
+  hitos = [],
   planos = [],
   isEditingPolygon = false,
   onClose,
   onOpenQRModal,
-  onOpenCubicarModal,
   onSelectPlano,
   onOpenUploadPlanModal,
   onAddVertexToZone,
   onDeleteZone,
   onToggleEditPolygon,
-  onOpenEditZoneModal
+  onOpenEditZoneModal,
+  onUpdateZoneData,
+  onUpdateElementoData
 }) => {
+  const [isEditingGps, setIsEditingGps] = useState(false);
+  const [manualLat, setManualLat] = useState<string>('');
+  const [manualLng, setManualLng] = useState<string>('');
+
+  useEffect(() => {
+    setIsEditingGps(false);
+  }, [zona?.id, elemento?.id]);
+
   if (!zona && !elemento) return null;
+
+  const geoCal = getOrInitGeoreferencia(currentPlano, hitos);
+
+  // Coordenadas GPS de la Zona (override manual o calculadas desde su centroide en la capa Maps)
+  const zonaCentroid = zona ? getPolygonCentroid(zona.poligono_svg?.puntos || []) : { x: 0, y: 0 };
+  const zonaAutoGps = zona ? pixelToLatLng(zonaCentroid.x, zonaCentroid.y, geoCal) : null;
+  const zonaGps = zona?.coordenadas_gps_override || zonaAutoGps;
+
+  // Superficie y perímetro reales calculados desde la calibración geodésica
+  const calculatedAreaM2 = zona ? calculatePolygonAreaM2(zona.poligono_svg?.puntos || [], geoCal) : 0;
+  const calculatedPerimM = zona ? calculatePolygonPerimeterM(zona.poligono_svg?.puntos || [], geoCal) : 0;
+
+  // Coordenadas GPS del Elemento (override manual o calculadas desde su pin)
+  const elemAutoGps = elemento ? pixelToLatLng(elemento.coordenadas_pin.x, elemento.coordenadas_pin.y, geoCal) : null;
+  const elemGps = elemento?.coordenadas_gps || elemAutoGps;
+
+  const handleStartEditGps = () => {
+    const targetGps = elemento ? elemGps : zonaGps;
+    setManualLat(String(targetGps?.lat || ''));
+    setManualLng(String(targetGps?.lng || ''));
+    setIsEditingGps(true);
+  };
+
+  const handleSaveManualGps = () => {
+    const latNum = parseFloat(manualLat);
+    const lngNum = parseFloat(manualLng);
+    if (isNaN(latNum) || isNaN(lngNum)) return;
+
+    if (elemento && onUpdateElementoData) {
+      onUpdateElementoData({
+        ...elemento,
+        coordenadas_gps: { lat: latNum, lng: lngNum }
+      });
+    } else if (zona && onUpdateZoneData) {
+      onUpdateZoneData({
+        ...zona,
+        coordenadas_gps_override: { lat: latNum, lng: lngNum }
+      });
+    }
+    setIsEditingGps(false);
+  };
+
+  const handleApplyCalculatedArea = () => {
+    if (!zona || !onUpdateZoneData || calculatedAreaM2 <= 0) return;
+    onUpdateZoneData({
+      ...zona,
+      superficie_estimada_m2: Math.round(calculatedAreaM2)
+    });
+  };
 
   const planoRelacionado = zona && planos.length > 0 
     ? planos.find(p => p.id !== zona.plano_id && (
@@ -77,6 +146,9 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
     }
   };
 
+  const activeGps = elemento ? elemGps : zonaGps;
+  const hasManualOverride = elemento ? !!elemento.coordenadas_gps : !!zona?.coordenadas_gps_override;
+
   return (
     <aside className="
       fixed md:absolute bottom-0 right-0 z-30
@@ -87,7 +159,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
       p-4 md:p-5 flex flex-col justify-between overflow-y-auto shadow-2xl
       md:m-3
     ">
-      <div className="space-y-4 md:space-y-5">
+      <div className="space-y-4">
         {/* Cabecera */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <div>
@@ -101,7 +173,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                 </span>
               )}
             </div>
-            <h3 className="text-lg font-bold text-white leading-tight mt-1">
+            <h3 className="text-base font-bold text-white leading-tight mt-1">
               {elemento ? elemento.tag_codigo : zona?.nombre}
             </h3>
           </div>
@@ -113,9 +185,85 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
           </button>
         </div>
 
+        {/* BLOQUE DE GEORREFERENCIACIÓN MAPS (Automática + Opción de Edición Manual) */}
+        {activeGps && (
+          <div className="bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-2.5 space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-emerald-300 flex items-center space-x-1.5">
+                <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                <span>{hasManualOverride ? 'GPS Editado Manualmente' : 'GPS Calculado desde Capa Maps'}</span>
+              </span>
+              <div className="flex items-center space-x-1.5">
+                <button
+                  type="button"
+                  onClick={handleStartEditGps}
+                  className="text-[10px] px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700"
+                  title="Corregir coordenadas GPS manualmente si hay diferencia"
+                >
+                  ✏️ Editar
+                </button>
+                <a
+                  href={`https://www.google.com/maps?q=${activeGps.lat},${activeGps.lng}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] px-1.5 py-0.5 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 rounded border border-emerald-500/40 flex items-center space-x-0.5"
+                >
+                  <span>Maps</span>
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              </div>
+            </div>
+
+            {!isEditingGps ? (
+              <div className="font-mono text-[11px] text-emerald-200 flex items-center justify-between">
+                <span>Lat: {activeGps.lat.toFixed(6)}</span>
+                <span>Lng: {activeGps.lng.toFixed(6)}</span>
+              </div>
+            ) : (
+              <div className="space-y-2 pt-1">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    type="number"
+                    step="any"
+                    value={manualLat}
+                    onChange={(e) => setManualLat(e.target.value)}
+                    placeholder="Latitud"
+                    className="bg-slate-950 border border-emerald-500/50 rounded px-2 py-1 text-[11px] font-mono text-white"
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    value={manualLng}
+                    onChange={(e) => setManualLng(e.target.value)}
+                    placeholder="Longitud"
+                    className="bg-slate-950 border border-emerald-500/50 rounded px-2 py-1 text-[11px] font-mono text-white"
+                  />
+                </div>
+                <div className="flex justify-end space-x-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingGps(false)}
+                    className="px-2 py-0.5 text-[10px] text-slate-400 hover:text-white"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveManualGps}
+                    className="px-2.5 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded text-[10px] flex items-center space-x-1"
+                  >
+                    <Check className="w-3 h-3" />
+                    <span>Guardar GPS</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Métricas en vivo de la Zona / Paquete de Intervención */}
-        {zona && (
-          <div className="space-y-3.5">
+        {zona && !elemento && (
+          <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center space-x-1.5">
                 <Layers className="w-4 h-4 text-sky-400" />
@@ -141,7 +289,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
             )}
 
             {/* Tarjetas de Métricas de Ingeniería */}
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-2 gap-2">
               <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 block">Salud a Priori</span>
                 <span className={`text-xs font-extrabold uppercase block mt-0.5 ${
@@ -151,12 +299,21 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                 }`}>
                   {zona.estado_salud_apriori || 'Regular'}
                 </span>
-                <span className="text-[10px] text-slate-400 block">Alcance preliminar</span>
+                <span className="text-[10px] text-slate-500 block">Perímetro: {calculatedPerimM} m</span>
               </div>
               <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 block">Superficie Estimada</span>
-                <span className="text-base font-bold text-white">{zona.superficie_estimada_m2 || 250} m²</span>
-                <span className="text-[10px] text-sky-400 block">Pintura total</span>
+                <span className="text-base font-bold text-white">{zona.superficie_estimada_m2 || calculatedAreaM2 || 250} m²</span>
+                {calculatedAreaM2 > 0 && Math.abs((zona.superficie_estimada_m2 || 0) - calculatedAreaM2) > 5 && (
+                  <button
+                    type="button"
+                    onClick={handleApplyCalculatedArea}
+                    className="text-[9px] text-emerald-400 hover:underline block text-left font-mono"
+                    title="Aplicar superficie geométrica calculada según escala Maps"
+                  >
+                    ⚡ Polígono: {calculatedAreaM2} m² (Usar)
+                  </button>
+                )}
               </div>
               <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 block">Envolvente Andamio</span>
@@ -177,15 +334,15 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
               <button
                 type="button"
                 onClick={() => onOpenEditZoneModal(zona)}
-                className="w-full py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl flex items-center justify-center space-x-2 transition shadow-lg"
+                className="w-full py-2 px-3 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl flex items-center justify-center space-x-2 transition shadow-lg"
               >
                 <Settings className="w-4 h-4" />
-                <span>Editar Parámetros y Cálculo de Andamio</span>
+                <span>Editar Parámetros y Andamio</span>
               </button>
             )}
 
             {/* Control de Contorno y Ajuste de Geometría de la Zona */}
-            <div className="bg-slate-950 p-3 rounded-xl border border-sky-500/30 space-y-2.5">
+            <div className="bg-slate-950 p-3 rounded-xl border border-sky-500/30 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold text-sky-400 flex items-center space-x-1.5">
                   <Ruler className="w-3.5 h-3.5" />
@@ -196,22 +353,16 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                     ? 'text-amber-300 bg-amber-950/80 border-amber-600 animate-pulse' 
                     : 'text-slate-400 bg-slate-900 border-slate-700'
                 }`}>
-                  {isEditingPolygon ? '✏️ Modo Edición Activo' : '🔒 Contorno Bloqueado'}
+                  {isEditingPolygon ? '✏️ Editando' : '🔒 Bloqueado'}
                 </span>
               </div>
-
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                {isEditingPolygon 
-                  ? 'Arrastra los nodos P1..Pn en el plano. Haz clic en [+] de cualquier borde para rodear curvas o diagonales.'
-                  : 'El contorno está bloqueado para evitar movimientos accidentales al navegar. Pulsa abajo para habilitar la edición.'}
-              </p>
 
               <div className="flex items-center space-x-2 pt-0.5">
                 {onToggleEditPolygon && (
                   <button
                     type="button"
                     onClick={onToggleEditPolygon}
-                    className={`flex-1 py-2 px-2.5 rounded-lg font-extrabold text-xs flex items-center justify-center space-x-1.5 transition shadow ${
+                    className={`flex-1 py-1.5 px-2.5 rounded-lg font-extrabold text-xs flex items-center justify-center space-x-1.5 transition shadow ${
                       isEditingPolygon
                         ? 'bg-emerald-500 hover:bg-emerald-400 text-black'
                         : 'bg-sky-600 hover:bg-sky-500 text-white'
@@ -220,12 +371,12 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                     {isEditingPolygon ? (
                       <>
                         <Lock className="w-3.5 h-3.5" />
-                        <span>Bloquear Contorno</span>
+                        <span>Bloquear</span>
                       </>
                     ) : (
                       <>
                         <Pencil className="w-3.5 h-3.5" />
-                        <span>Modificar Contorno en Plano</span>
+                        <span>Modificar Contorno</span>
                       </>
                     )}
                   </button>
@@ -235,8 +386,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                   <button
                     type="button"
                     onClick={() => onAddVertexToZone(zona.id)}
-                    className="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sky-300 font-semibold text-xs rounded-lg flex items-center justify-center space-x-1 transition"
-                    title="Añadir un nuevo vértice"
+                    className="py-1.5 px-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sky-300 font-semibold text-xs rounded-lg flex items-center justify-center space-x-1 transition"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>+ Vértice</span>
@@ -246,12 +396,8 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                 {onDeleteZone && (
                   <button
                     type="button"
-                    onClick={() => {
-                      if (confirm(`¿Eliminar la zona "${zona.nombre}" (${zona.codigo})?`)) {
-                        onDeleteZone(zona.id);
-                      }
-                    }}
-                    className="py-2 px-2.5 bg-red-950/50 hover:bg-red-900/80 border border-red-800/50 text-red-300 font-semibold text-xs rounded-lg flex items-center space-x-1 transition"
+                    onClick={() => onDeleteZone(zona.id)}
+                    className="py-1.5 px-2 bg-red-950/50 hover:bg-red-900/80 border border-red-800/50 text-red-300 font-semibold text-xs rounded-lg flex items-center justify-center transition"
                     title="Eliminar esta zona"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -266,7 +412,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                 <button
                   type="button"
                   onClick={() => onSelectPlano?.(planoRelacionado.id)}
-                  className="w-full py-2.5 px-3 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-lg flex items-center justify-center space-x-2 transition shadow-md"
+                  className="w-full py-2 px-3 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-lg flex items-center justify-center space-x-2 transition shadow-md"
                 >
                   <Map className="w-4 h-4" />
                   <span>Abrir Plano de Detalle ({planoRelacionado.titulo})</span>
@@ -275,10 +421,10 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                 <button
                   type="button"
                   onClick={() => onOpenUploadPlanModal?.()}
-                  className="w-full py-2 px-3 bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs rounded-lg flex items-center justify-center space-x-1.5 border border-slate-700 transition"
+                  className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs rounded-lg flex items-center justify-center space-x-1.5 border border-slate-700 transition"
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  <span>+ Subir Plano de Detalle para esta Nave</span>
+                  <span>+ Subir Plano de Detalle para esta Zona</span>
                 </button>
               )}
             </div>
@@ -287,69 +433,47 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
 
         {/* Detalle Técnico del Elemento Seleccionado */}
         {elemento && (
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-400">Estado Actual:</span>
               {getSemaforoBadge(elemento.estado_actual)}
             </div>
 
-            <div className="bg-slate-950 rounded-lg p-3.5 border border-slate-800 space-y-2.5 text-xs">
-              <div className="flex justify-between border-b border-slate-800 pb-1.5">
+            <div className="bg-slate-950 rounded-lg p-3 border border-slate-800 space-y-2 text-xs">
+              <div className="flex justify-between border-b border-slate-800 pb-1">
                 <span className="text-slate-400">Código ERP / SAP:</span>
                 <span className="font-mono text-slate-200">{elemento.codigo_equipo_erp || 'N/A'}</span>
               </div>
-              <div className="flex justify-between border-b border-slate-800 pb-1.5">
+              <div className="flex justify-between border-b border-slate-800 pb-1">
                 <span className="text-slate-400">Tipo de Activo:</span>
                 <span className="capitalize text-slate-200">{elemento.tipo_elemento.replace('_', ' ')}</span>
               </div>
-              <div className="flex justify-between border-b border-slate-800 pb-1.5">
+              <div className="flex justify-between border-b border-slate-800 pb-1">
                 <span className="text-slate-400">Perfil Estructural:</span>
                 <span className="font-mono font-bold text-amber-400">{elemento.geometria_parametros.perfil || 'Estándar'}</span>
               </div>
-              <div className="flex justify-between border-b border-slate-800 pb-1.5">
-                <span className="text-slate-400">Longitud / Altura:</span>
-                <span className="text-slate-200">{elemento.geometria_parametros.longitud_m} m</span>
-              </div>
-              <div className="flex justify-between border-b border-slate-800 pb-1.5">
+              <div className="flex justify-between border-b border-slate-800 pb-1">
                 <span className="text-slate-400">Superficie geométrica:</span>
                 <span className="text-slate-200">{elemento.geometria_parametros.m2_superficie} m²</span>
               </div>
-              <div className="flex justify-between border-b border-slate-800 pb-1.5">
-                <span className="text-slate-400">Peso teórico:</span>
-                <span className="text-slate-200">{elemento.geometria_parametros.peso_kg} kg</span>
-              </div>
-              <div className="flex justify-between items-center pt-1">
-                <span className="text-slate-400">Criticidad de Planta:</span>
-                <div className="flex space-x-1">
-                  {[1, 2, 3, 4, 5].map((lvl) => (
-                    <span
-                      key={lvl}
-                      className={`w-3 h-3 rounded-full ${lvl <= elemento.criticidad_activo ? 'bg-amber-400' : 'bg-slate-800'}`}
-                    />
-                  ))}
-                </div>
-              </div>
             </div>
 
-            {/* Acciones para el elemento */}
-            <div className="space-y-2 pt-2">
-              <button
-                type="button"
-                onClick={() => onOpenQRModal(elemento)}
-                className="w-full py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg flex items-center justify-center space-x-2 transition shadow-lg"
-              >
-                <QrCode className="w-4 h-4" />
-                <span>Generar Etiqueta QR Imprimible</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => onOpenQRModal(elemento)}
+              className="w-full py-2 px-3 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg flex items-center justify-center space-x-2 transition shadow-lg"
+            >
+              <QrCode className="w-4 h-4" />
+              <span>Generar Etiqueta QR Imprimible</span>
+            </button>
           </div>
         )}
       </div>
 
       {/* Pie del Drawer */}
-      <div className="pt-4 border-t border-slate-800 text-[11px] text-slate-500 flex justify-between">
-        <span>Sincronizado con Supabase</span>
-        <span className="font-mono">RLS: Inspector / Ing</span>
+      <div className="pt-3 mt-3 border-t border-slate-800 text-[10px] text-slate-500 flex justify-between">
+        <span>Cloud: Neon + Backblaze B2</span>
+        <span className="font-mono">Escala: {geoCal.metersPerPixel.toFixed(3)} m/px</span>
       </div>
     </aside>
   );

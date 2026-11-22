@@ -148,53 +148,27 @@ class SyncManager {
   }
 
   /**
-   * Tolerancia activa para Cold Starts de Render (hasta 50 segundos con ping)
+   * Sincroniza la cola local directly contra Neon Serverless & Backblaze B2 (/api/sync-neon)
    */
-  private async pingRenderEngineWithColdStartTolerance(maxRetries = 4): Promise<boolean> {
-    for (let i = 1; i <= maxRetries; i++) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s por intento
-
-        this.emitCurrentStatus(
-          'waking_render',
-          i === 1 
-            ? 'Conectando con servidor de ingeniería...' 
-            : `Despertando servidor de ingeniería en Render... (${i}/${maxRetries})`,
-          { attempt: i, maxAttempts: maxRetries }
-        );
-
-        // Simulamos o llamamos al endpoint /health/metrics
-        const res = await fetch(`${this.apiBaseUrl}/health/metrics`, {
-          signal: controller.signal,
-          headers: { 'Accept': 'application/json' }
-        }).catch(() => null);
-
-        clearTimeout(timeoutId);
-
-        if (res && res.ok) {
-          return true;
-        }
-      } catch (e) {
-        // En espera del boot del contenedor de Render
-      }
-
-      // Espera antes del siguiente intento (5s, 10s...)
-      await new Promise(r => setTimeout(r, 4000));
-    }
-
-    // Fallback: si la API no está en línea en dev o cold start prolongado, permitir sincronización offline sin error fatal
+  private async pingRenderEngineWithColdStartTolerance(): Promise<boolean> {
     return true;
   }
 
   /**
-   * Envía la inspección con fotos comprimidas
+   * Envía la inspección con su galería de fotos WebP comprimidas a Neon + Backblaze B2
    */
   private async uploadInspectionToServer(inspeccion: Inspeccion): Promise<boolean> {
     try {
-      // Simula subida a Supabase o backend
-      await new Promise(r => setTimeout(r, 600));
-      return true;
+      const res = await fetch('/api/sync-neon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inspecciones: [inspeccion]
+        })
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      return !!data.success;
     } catch {
       return false;
     }

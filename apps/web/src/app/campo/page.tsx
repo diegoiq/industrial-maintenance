@@ -8,24 +8,26 @@ import {
   DownloadCloud, 
   Save, 
   CheckCircle2, 
-  AlertCircle, 
   Layers, 
   HardHat, 
   Clock, 
-  ChevronRight,
   ArrowLeft,
   Sparkles,
-  Info,
   TrendingUp,
   FileSpreadsheet,
   MapPin,
   Navigation,
   Map as MapIcon,
   Globe,
-  X
+  X,
+  Plus,
+  Trash2,
+  CloudUpload,
+  Compass,
+  Image as ImageIcon
 } from 'lucide-react';
 import { db } from '../../lib/db';
-import { compressInspectionPhoto, CompressedResult } from '../../lib/imageCompression';
+import { compressInspectionPhoto } from '../../lib/imageCompression';
 import { syncManager } from '../../lib/syncManager';
 import { SyncStatusBadge } from '../../components/campo/SyncStatusBadge';
 import { VectorAnnotationCanvas } from '../../components/campo/VectorAnnotationCanvas';
@@ -33,33 +35,216 @@ import { QRScannerModal } from '../../components/campo/QRScannerModal';
 import { ReporteRelevamientoModal } from '../../components/campo/ReporteRelevamientoModal';
 import { AjustarZonaCampoModal } from '../../components/campo/AjustarZonaCampoModal';
 import { 
-  INITIAL_AREAS, 
-  INITIAL_PLANOS, 
-  INITIAL_ZONAS, 
-  INITIAL_ELEMENTOS 
-} from '../../lib/mockData';
-import { Elemento, Area, Inspeccion, VectorAnnotation, FotoInspeccionLocal, Plano, TipoElemento, ZonaInspeccion } from '../../types';
+  getOrInitGeoreferencia, 
+  latLngToPixel, 
+  pixelToLatLng, 
+  getPolygonCentroid, 
+  isPointInPolygon,
+  calculatePolygonAreaM2
+} from '../../lib/georeferenceEngine';
+import { 
+  Elemento, 
+  Area, 
+  Inspeccion, 
+  VectorAnnotation, 
+  FotoInspeccionLocal, 
+  Plano, 
+  TipoElemento, 
+  ZonaInspeccion,
+  HitoGeografico 
+} from '../../types';
 
 export default function CampoPage() {
   const [areas, setAreas] = useState<Area[]>([]);
   const [planos, setPlanos] = useState<Plano[]>([]);
   const [zonas, setZonas] = useState<ZonaInspeccion[]>([]);
   const [elementos, setElementos] = useState<Elemento[]>([]);
+  const [hitos, setHitos] = useState<HitoGeografico[]>([]);
+
   const [selectedAreaId, setSelectedAreaId] = useState<string>('');
   const [selectedPlanoId, setSelectedPlanoId] = useState<string>('');
+  const [selectedZona, setSelectedZona] = useState<ZonaInspeccion | null>(null);
   const [selectedElemento, setSelectedElemento] = useState<Elemento | null>(null);
+
+  // Alcance dentro de la zona: 'zona_general' (relevamiento de la zona completa) o 'elemento' (activo/hallazgo puntual)
+  const [inspectionTargetMode, setInspectionTargetMode] = useState<'zona_general' | 'elemento'>('zona_general');
+
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
   const [isAjustarZonaModalOpen, setIsAjustarZonaModalOpen] = useState(false);
-  const [isDownloadingArea, setIsDownloadingArea] = useState(false);
-  const [downloadSuccessMsg, setDownloadSuccessMsg] = useState('');
-  const [viewMode, setViewMode] = useState<'lista' | 'mapa'>('lista');
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
+  const [viewMode, setViewMode] = useState<'zonas' | 'mapa'>('zonas');
 
-  // Coordenadas GPS Satelital de Terreno
-  const [gpsData, setGpsData] = useState<{ lat: number; lng: number; precision_m: number } | null>(null);
+  // Coordenadas GPS Satelital de Terreno y proyección sobre el plano CAD
+  const [gpsData, setGpsData] = useState<{ lat: number; lng: number; precision_m: number; pixelX?: number; pixelY?: number } | null>(null);
   const [isGettingGps, setIsGettingGps] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
 
-  // Capturar posición GPS física del inspector
+  // Estados del formulario de inspección
+  const [sustrato, setSustrato] = useState('acero_al_carbono');
+  const [recubrimiento, setRecubrimiento] = useState('epoxi_poliamida');
+  const [gradoCorrosion, setGradoCorrosion] = useState('Ri 3');
+  const [porcentajeAfectado, setPorcentajeAfectado] = useState<number>(20);
+  const [requiereReemplazo, setRequiereReemplazo] = useState(false);
+  const [observaciones, setObservaciones] = useState('');
+
+  // Filtro de Cota y Modal de Reportar Hallazgo / Elemento o Hito dentro de la Zona
+  const [cotaFiltro, setCotaFiltro] = useState<string>('todos');
+  const [isFieldPinModalOpen, setIsFieldPinModalOpen] = useState(false);
+  const [fieldTag, setFieldTag] = useState('');
+  const [fieldDisciplina, setFieldDisciplina] = useState<TipoElemento>('acero_estructural');
+  const [fieldCota, setFieldCota] = useState<number>(146000);
+  const [fieldDescripcion, setFieldDescripcion] = useState('');
+
+  // Estimación de Andamio en Campo para la Zona / Activo
+  const [requiereAndamioCampo, setRequiereAndamioCampo] = useState(true);
+  const [tipoAccesoCampo, setTipoAccesoCampo] = useState<'suelo' | 'escalera' | 'manlift' | 'andamio_tubular' | 'andamio_colgante'>('andamio_tubular');
+  const [alturaAndamioCampo, setAlturaAndamioCampo] = useState<number>(6.5);
+  const [volumenAndamioCampo, setVolumenAndamioCampo] = useState<number>(180.0);
+
+  // Contador Temporal y Envejecimiento Estructural
+  const [antiguedadAnios, setAntiguedadAnios] = useState<number>(10);
+  const [ultimoRevestimientoAnios, setUltimoRevestimientoAnios] = useState<number>(3);
+  const [tasaAvancePct, setTasaAvancePct] = useState<number>(5);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+
+  // GALERÍA MULTI-FOTO POR ZONA / INSPECCIÓN (Ilimitadas fotos WebP con anotaciones y comentario individual)
+  const [fotosGaleria, setFotosGaleria] = useState<FotoInspeccionLocal[]>([]);
+  const [activePhotoIndex, setActivePhotoIndex] = useState<number>(0);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [lastCompressionRatio, setLastCompressionRatio] = useState<number | null>(null);
+  const [savedSuccess, setSavedSuccess] = useState(false);
+  const [inspeccionesLocales, setInspeccionesLocales] = useState<Inspeccion[]>([]);
+
+  // Cargar desde IndexedDB e hidratar automáticamente desde Neon Cloud
+  const loadAndHydrateFieldData = async (forceCloudPull: boolean = false) => {
+    setIsSyncingCloud(true);
+    try {
+      let loadedAreas = await db.areas.toArray();
+      let loadedPlanos = await db.planos.toArray();
+      let loadedZonas = await db.zonas.toArray();
+      let loadedElementos = await db.elementos.toArray();
+      let loadedHitos = await db.hitos.toArray();
+      let loadedInspecciones = await db.inspecciones.toArray();
+
+      if (forceCloudPull || loadedZonas.length === 0 || loadedPlanos.length === 0) {
+        try {
+          const res = await fetch('/api/sync-neon');
+          const json = await res.json();
+          if (json.success && json.data) {
+            for (const a of (json.data.areas || [])) await db.areas.put(a);
+            for (const p of (json.data.planos || [])) await db.planos.put(p);
+            for (const z of (json.data.zonas || [])) await db.zonas.put(z);
+            for (const e of (json.data.elementos || [])) await db.elementos.put(e);
+            for (const h of (json.data.hitos || [])) await db.hitos.put(h);
+            for (const i of (json.data.inspecciones || [])) await db.inspecciones.put(i);
+
+            loadedAreas = await db.areas.toArray();
+            loadedPlanos = await db.planos.toArray();
+            loadedZonas = await db.zonas.toArray();
+            loadedElementos = await db.elementos.toArray();
+            loadedHitos = await db.hitos.toArray();
+            loadedInspecciones = await db.inspecciones.toArray();
+          }
+        } catch (err) {
+          console.warn('Operando en modo offline local:', err);
+        }
+      }
+
+      setAreas(loadedAreas);
+      setPlanos(loadedPlanos);
+      setZonas(loadedZonas);
+      setElementos(loadedElementos);
+      setHitos(loadedHitos);
+      setInspeccionesLocales(loadedInspecciones);
+
+      const defaultPlano = loadedPlanos[0];
+      if (defaultPlano && !selectedPlanoId) {
+        setSelectedPlanoId(defaultPlano.id);
+        setSelectedAreaId(defaultPlano.area_id);
+      } else if (loadedAreas.length > 0 && !selectedAreaId) {
+        setSelectedAreaId(loadedAreas[0].id);
+      }
+
+      if (loadedZonas.length > 0 && !selectedZona) {
+        handleSelectZonaForTour(loadedZonas[0], loadedElementos);
+      }
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAndHydrateFieldData(true);
+  }, []);
+
+  const currentPlano = planos.find(p => p.id === selectedPlanoId) || planos[0];
+  const geoCal = getOrInitGeoreferencia(currentPlano, hitos);
+  const zonasDelPlano = zonas.filter(z => (currentPlano ? z.plano_id === currentPlano.id : true));
+  const zonasFiltradas = zonasDelPlano.filter(z => cotaFiltro === 'todos' || String(z.cota_nivel || 146000) === cotaFiltro);
+  const elementosDeZona = selectedZona ? elementos.filter(e => e.zona_id === selectedZona.id) : [];
+
+  // Seleccionar una Zona para iniciar el recorrido en campo
+  const handleSelectZonaForTour = (zona: ZonaInspeccion, allElems: Elemento[] = elementos) => {
+    setSelectedZona(zona);
+    if (zona.nivel_acceso_andamio) {
+      setRequiereAndamioCampo(zona.nivel_acceso_andamio.requiere_andamio !== false);
+      setTipoAccesoCampo(zona.nivel_acceso_andamio.tipo_acceso || 'andamio_tubular');
+      setAlturaAndamioCampo(zona.nivel_acceso_andamio.altura_mts || 6.5);
+      setVolumenAndamioCampo(zona.nivel_acceso_andamio.envolvente_m3 || 180);
+    }
+    const elemsInZona = allElems.filter(e => e.zona_id === zona.id);
+    if (elemsInZona.length > 0) {
+      setSelectedElemento(elemsInZona[0]);
+    } else {
+      setSelectedElemento(null);
+      setInspectionTargetMode('zona_general');
+    }
+  };
+
+  // Sincronización bidireccional manual con Neon + Backblaze B2
+  const handleFullCloudSync = async () => {
+    setIsSyncingCloud(true);
+    setSyncMessage('');
+    try {
+      // 1. Subir cambios locales pendientes
+      const allAreas = await db.areas.toArray();
+      const allPlanos = await db.planos.toArray();
+      const allZonas = await db.zonas.toArray();
+      const allElementos = await db.elementos.toArray();
+      const allHitos = await db.hitos.toArray();
+      const allInspecciones = await db.inspecciones.toArray();
+
+      if (allZonas.length > 0 || allInspecciones.length > 0) {
+        await fetch('/api/sync-neon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            areas: allAreas,
+            planos: allPlanos,
+            zonas: allZonas,
+            elementos: allElementos,
+            hitos: allHitos,
+            inspecciones: allInspecciones
+          })
+        });
+      }
+
+      // 2. Descargar última versión de la nube
+      await loadAndHydrateFieldData(true);
+      const zCount = await db.zonas.count();
+      const iCount = await db.inspecciones.count();
+      setSyncMessage(`¡Sincronizado con Neon y Backblaze B2! (${zCount} zonas de planta y ${iCount} inspecciones disponibles offline en tu celular).`);
+      setTimeout(() => setSyncMessage(''), 5000);
+    } catch (err: any) {
+      setSyncMessage('Guardado en memoria local (IndexedDB). Se sincronizará cuando haya señal.');
+      setTimeout(() => setSyncMessage(''), 4000);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // Capturar posición GPS física del inspector y proyectarla sobre el plano CAD para detectar en qué Zona está
   const handleCaptureGPS = () => {
     if (typeof window === 'undefined' || !navigator.geolocation) {
       setGpsError("Tu dispositivo no soporta geolocalización satelital.");
@@ -69,11 +254,27 @@ export default function CampoPage() {
     setGpsError(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(6));
+        const lng = Number(pos.coords.longitude.toFixed(6));
+        const precision_m = Math.round(pos.coords.accuracy);
+        const pixelPos = latLngToPixel(lat, lng, geoCal);
+
         setGpsData({
-          lat: Number(pos.coords.latitude.toFixed(6)),
-          lng: Number(pos.coords.longitude.toFixed(6)),
-          precision_m: Math.round(pos.coords.accuracy)
+          lat,
+          lng,
+          precision_m,
+          pixelX: pixelPos.x,
+          pixelY: pixelPos.y
         });
+
+        // Verificar si el inspector está parado dentro de alguna de las Zonas del plano
+        const detectedZone = zonasDelPlano.find(z => isPointInPolygon(pixelPos, z.poligono_svg?.puntos || []));
+        if (detectedZone) {
+          handleSelectZonaForTour(detectedZone);
+          setSyncMessage(`📍 GPS te ubicó dentro de la Zona: ${detectedZone.codigo} (${detectedZone.nombre})`);
+          setTimeout(() => setSyncMessage(''), 4500);
+        }
+
         setIsGettingGps(false);
       },
       (err) => {
@@ -84,159 +285,130 @@ export default function CampoPage() {
     );
   };
 
-  // Estados del formulario de inspección
-  const [sustrato, setSustrato] = useState('acero_al_carbono');
-  const [recubrimiento, setRecubrimiento] = useState('epoxi_poliamida');
-  const [gradoCorrosion, setGradoCorrosion] = useState('Ri 3');
-  const [porcentajeAfectado, setPorcentajeAfectado] = useState<number>(20);
-  const [requiereReemplazo, setRequiereReemplazo] = useState(false);
-  const [observaciones, setObservaciones] = useState('');
-
-  // Filtro de Cota y Modal de Reportar Hallazgo en Terreno
-  const [cotaFiltro, setCotaFiltro] = useState<string>('todos');
-  const [isFieldPinModalOpen, setIsFieldPinModalOpen] = useState(false);
-  const [fieldTag, setFieldTag] = useState('');
-  const [fieldDisciplina, setFieldDisciplina] = useState<TipoElemento>('acero_estructural');
-  const [fieldCota, setFieldCota] = useState<number>(146000);
-
-  // Estimación de Andamio en Campo para el Activo
-  const [requiereAndamioCampo, setRequiereAndamioCampo] = useState(false);
-  const [tipoAccesoCampo, setTipoAccesoCampo] = useState<'suelo' | 'escalera' | 'manlift' | 'andamio_tubular' | 'andamio_colgante'>('andamio_tubular');
-  const [alturaAndamioCampo, setAlturaAndamioCampo] = useState<number>(4.0);
-  const [volumenAndamioCampo, setVolumenAndamioCampo] = useState<number>(60.0);
-
-  // Crear hallazgo / pin dinámico directamente desde el celular
+  // Crear nuevo Elemento / Hallazgo dentro de la Zona activa desde el celular
   const handleCreateFieldPin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fieldTag.trim()) return;
 
+    const targetZona = selectedZona || zonas[0];
+    const centroid = targetZona ? getPolygonCentroid(targetZona.poligono_svg?.puntos || []) : { x: 800, y: 450 };
+    // Si tiene GPS dentro del plano, ubicarlo ahí; si no, en el centroide de la zona seleccionada con pequeño offset
+    const offset = Math.round((Math.random() - 0.5) * 40);
+    const pinCoords = gpsData?.pixelX && gpsData?.pixelY
+      ? { x: gpsData.pixelX, y: gpsData.pixelY }
+      : { x: centroid.x + offset, y: centroid.y + offset };
+
+    const autoGps = gpsData ? { lat: gpsData.lat, lng: gpsData.lng, precision_m: gpsData.precision_m } : pixelToLatLng(pinCoords.x, pinCoords.y, geoCal);
+
     const newId = `elem_field_${Date.now()}`;
     const newPin: Elemento = {
       id: newId,
-      zona_id: selectedAreaId || 'general',
+      zona_id: targetZona?.id || 'general',
       tag_codigo: fieldTag.trim().toUpperCase(),
+      codigo_equipo_erp: fieldDescripcion.trim() || undefined,
       tipo_elemento: fieldDisciplina,
       qr_token: `QR-FIELD-${Date.now().toString(36).toUpperCase()}`,
-      coordenadas_pin: { x: 800, y: 450 },
-      cota_nivel: fieldCota,
+      coordenadas_pin: pinCoords,
+      cota_nivel: targetZona?.cota_nivel || fieldCota,
       creado_en_campo: true,
       geometria_parametros: {
-        perfil: fieldDisciplina === 'parral_caneria' ? 'Pipe-Rack W8' : fieldDisciplina === 'soporte' ? 'Soporte Silleta UPN' : 'Estándar',
+        perfil: fieldDisciplina === 'parral_caneria' ? 'Pipe-Rack W8' : fieldDisciplina === 'soporte' ? 'Soporte Silleta UPN' : 'Hallazgo Campo',
         longitud_m: 3.0,
         m2_superficie: 8.5,
         peso_kg: 120
       },
       criticidad_activo: 3,
-      estado_actual: 'gris',
-      coordenadas_gps: gpsData || undefined
+      estado_actual: 'amarillo',
+      coordenadas_gps: autoGps
     };
 
     await db.elementos.put(newPin);
     const updated = await db.elementos.toArray();
     setElementos(updated);
     setSelectedElemento(newPin);
+    setInspectionTargetMode('elemento');
     setIsFieldPinModalOpen(false);
     setFieldTag('');
+    setFieldDescripcion('');
   };
 
-  // Contador Temporal y Envejecimiento Estructural
-  const [antiguedadAnios, setAntiguedadAnios] = useState<number>(10);
-  const [ultimoRevestimientoAnios, setUltimoRevestimientoAnios] = useState<number>(3);
-  const [tasaAvancePct, setTasaAvancePct] = useState<number>(5); // 5% por año
-  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
-  
-  // Fotos y anotaciones
-  const [compressedPhoto, setCompressedPhoto] = useState<CompressedResult | null>(null);
-  const [annotations, setAnnotations] = useState<VectorAnnotation[]>([]);
-  const [isCompressing, setIsCompressing] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
-  const [inspeccionesLocales, setInspeccionesLocales] = useState<Inspeccion[]>([]);
-
-  // Cargar datos reales desde IndexedDB
-  useEffect(() => {
-    async function initDB() {
-      const loadedAreas = await db.areas.toArray();
-      const loadedPlanos = await db.planos.toArray();
-      const loadedZonas = await db.zonas.toArray();
-      const loadedElementos = await db.elementos.toArray();
-      const loadedInspecciones = await db.inspecciones.toArray();
-
-      setAreas(loadedAreas);
-      setPlanos(loadedPlanos);
-      setZonas(loadedZonas);
-      setElementos(loadedElementos);
-      setInspeccionesLocales(loadedInspecciones);
-
-      if (loadedAreas.length > 0 && !selectedAreaId) {
-        setSelectedAreaId(loadedAreas[0].id);
-      }
-
-      if (loadedPlanos.length > 0 && !selectedPlanoId) {
-        setSelectedPlanoId(loadedPlanos[0].id);
-      }
-
-      if (loadedElementos.length > 0 && !selectedElemento) {
-        setSelectedElemento(loadedElementos[0]);
-      }
-    }
-
-    initDB();
-  }, []);
-
-  // Comprobar y verificar cacheo local para operar 100% Offline
-  const handleDownloadAreaOffline = async () => {
-    setIsDownloadingArea(true);
-    setDownloadSuccessMsg('');
-
-    try {
-      const count = await db.elementos.count();
-      const areasCount = await db.areas.count();
-      const planosCount = await db.planos.count();
-      setDownloadSuccessMsg(`¡${areasCount} áreas, ${planosCount} planos y ${count} activos confirmados en memoria local (IndexedDB) para trabajo 100% offline!`);
-      setTimeout(() => setDownloadSuccessMsg(''), 4500);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsDownloadingArea(false);
-    }
-  };
-
-  // Manejo de captura de cámara / archivo fotográfico con compresión automática
-  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Manejo de captura de MÚLTIPLES fotos con compresión WebP automática
+  const handleMultiPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
     setIsCompressing(true);
     try {
-      const result = await compressInspectionPhoto(file);
-      setCompressedPhoto(result);
-      setAnnotations([]); // Reiniciar marcas para la nueva foto
+      const nuevasFotos: FotoInspeccionLocal[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const result = await compressInspectionPhoto(files[i]);
+        setLastCompressionRatio(result.ratioReducedPercent);
+        nuevasFotos.push({
+          id: `foto_${Date.now()}_${i}`,
+          thumbnail_data_url: result.dataUrl,
+          original_webp_blob: result.blob,
+          peso_bytes: result.compressedSizeBytes,
+          comentario: '',
+          anotaciones_canvas: []
+        });
+      }
+      setFotosGaleria(prev => {
+        const combined = [...prev, ...nuevasFotos];
+        setActivePhotoIndex(combined.length - 1);
+        return combined;
+      });
     } catch (err) {
-      console.error('Error al comprimir foto:', err);
+      console.error('Error al comprimir fotos:', err);
     } finally {
       setIsCompressing(false);
+      e.target.value = '';
     }
   };
 
-  // Guardar inspección en IndexedDB y encolar en SyncManager
+  // Actualizar anotaciones o comentario de la foto activa en la galería
+  const handleUpdateActivePhotoAnnotations = (newAnnotations: VectorAnnotation[]) => {
+    setFotosGaleria(prev =>
+      prev.map((f, idx) => (idx === activePhotoIndex ? { ...f, anotaciones_canvas: newAnnotations } : f))
+    );
+  };
+
+  const handleUpdateActivePhotoComment = (comment: string) => {
+    setFotosGaleria(prev =>
+      prev.map((f, idx) => (idx === activePhotoIndex ? { ...f, comentario: comment } : f))
+    );
+  };
+
+  const handleRemovePhoto = (indexToRemove: number) => {
+    setFotosGaleria(prev => {
+      const filtered = prev.filter((_, idx) => idx !== indexToRemove);
+      if (activePhotoIndex >= filtered.length) {
+        setActivePhotoIndex(Math.max(0, filtered.length - 1));
+      }
+      return filtered;
+    });
+  };
+
+  // Guardar inspección de Zona o Elemento en IndexedDB y sincronizar con Neon + Backblaze B2
   const handleSaveInspection = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedElemento) return;
+    if (!selectedZona && !selectedElemento) return;
 
-    const nuevaFoto: FotoInspeccionLocal = {
-      thumbnail_data_url: compressedPhoto?.thumbnailDataUrl || '',
-      original_webp_blob: compressedPhoto?.blob,
-      peso_bytes: compressedPhoto?.compressedSizeBytes || 0,
-      anotaciones_canvas: annotations
-    };
+    const targetElemId = inspectionTargetMode === 'elemento' && selectedElemento
+      ? selectedElemento.id
+      : `ZONA:${selectedZona?.codigo || 'GENERAL'}`;
 
     const inspeccionId = `insp_${Date.now()}`;
-    const mesesVentanaIntervencion = Math.max(1, Math.round(((Math.max(40, porcentajeAfectado + 10) - porcentajeAfectado) / Math.max(1, tasaAvancePct)) * 12));
+    const mesesVentanaIntervencion = Math.max(
+      1,
+      Math.round(((Math.max(40, porcentajeAfectado + 10) - porcentajeAfectado) / Math.max(1, tasaAvancePct)) * 12)
+    );
 
     const nuevaInspeccion: Inspeccion = {
       id: inspeccionId,
-      elemento_id: selectedElemento.id,
-      inspector_nombre: 'Inspector de Turno (Planta)',
+      elemento_id: targetElemId,
+      zona_id: selectedZona?.id,
+      zona_codigo: selectedZona?.codigo,
+      inspector_nombre: 'Inspector de Campo',
       fecha_inspeccion: new Date().toISOString(),
       estado_sincronizacion: 'pendiente',
       clasificacion_sustrato: sustrato,
@@ -249,465 +421,585 @@ export default function CampoPage() {
       ultimo_revestimiento_anios: ultimoRevestimientoAnios,
       tasa_avance_anual_pct: tasaAvancePct,
       meses_ventana_intervencion: mesesVentanaIntervencion,
-      coordenadas_gps: gpsData || undefined,
+      coordenadas_gps: gpsData ? { lat: gpsData.lat, lng: gpsData.lng, precision_m: gpsData.precision_m } : undefined,
       requiere_andamio: requiereAndamioCampo,
       tipo_acceso_sugerido: tipoAccesoCampo,
       altura_andamio_m: alturaAndamioCampo,
       volumen_andamio_m3: volumenAndamioCampo,
       observaciones: observaciones,
-      fotos: compressedPhoto ? [nuevaFoto] : []
+      fotos: fotosGaleria
     };
 
-    // Actualizar estado del elemento localmente con KPIs de envejecimiento y GPS
-    const nuevoEstado = requiereReemplazo ? 'rojo' : gradoCorrosion === 'Ri 4' ? 'naranja' : gradoCorrosion === 'Ri 3' ? 'amarillo' : 'verde';
-    await db.elementos.update(selectedElemento.id, { 
-      estado_actual: nuevoEstado,
-      antiguedad_anios: antiguedadAnios,
-      ultimo_revestimiento_anios: ultimoRevestimientoAnios,
-      tasa_avance_anual_pct: tasaAvancePct,
-      ultima_inspeccion_fecha: new Date().toISOString(),
-      coordenadas_gps: gpsData || undefined
-    });
+    // Si es un elemento puntual, actualizar su semáforo
+    if (inspectionTargetMode === 'elemento' && selectedElemento) {
+      const nuevoEstado = requiereReemplazo ? 'rojo' : gradoCorrosion === 'Ri 4' || gradoCorrosion === 'Ri 5' ? 'naranja' : gradoCorrosion === 'Ri 3' ? 'amarillo' : 'verde';
+      await db.elementos.update(selectedElemento.id, {
+        estado_actual: nuevoEstado,
+        antiguedad_anios: antiguedadAnios,
+        ultimo_revestimiento_anios: ultimoRevestimientoAnios,
+        tasa_avance_anual_pct: tasaAvancePct,
+        ultima_inspeccion_fecha: new Date().toISOString(),
+        coordenadas_gps: gpsData ? { lat: gpsData.lat, lng: gpsData.lng, precision_m: gpsData.precision_m } : selectedElemento.coordenadas_gps
+      });
+    }
 
-    // Guardar en Dexie y encolar en SyncManager resiliente
+    // Si hay zona seleccionada, actualizar su estado de salud a priori y parámetros de andamio validados en campo
+    if (selectedZona) {
+      const saludCampo = requiereReemplazo || gradoCorrosion === 'Ri 5'
+        ? 'critico'
+        : gradoCorrosion === 'Ri 4'
+        ? 'malo'
+        : gradoCorrosion === 'Ri 3'
+        ? 'regular'
+        : 'bueno';
+
+      const updatedZona: ZonaInspeccion = {
+        ...selectedZona,
+        estado_salud_apriori: saludCampo,
+        nivel_acceso_andamio: {
+          ...(selectedZona.nivel_acceso_andamio || { complejidad: 'media', requiere_parada: false }),
+          requiere_andamio: requiereAndamioCampo,
+          tipo_acceso: tipoAccesoCampo,
+          altura_mts: alturaAndamioCampo,
+          envolvente_m3: volumenAndamioCampo,
+          estimado_en_campo_por: 'Validado en Campo'
+        }
+      };
+      await db.zonas.put(updatedZona);
+      setSelectedZona(updatedZona);
+      setZonas(await db.zonas.toArray());
+    }
+
+    // Guardar en Dexie y disparar subida a Neon + Backblaze B2
     await syncManager.enqueueInspection(nuevaInspeccion);
 
-    // Actualizar lista local
+    // Sincronizar también la zona y elementos actualizados si hay conexión
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      fetch('/api/sync-neon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          zonas: await db.zonas.toArray(),
+          elementos: await db.elementos.toArray(),
+          inspecciones: [nuevaInspeccion]
+        })
+      }).catch(() => null);
+    }
+
     const actualizadas = await db.inspecciones.toArray();
     setInspeccionesLocales(actualizadas);
+    setElementos(await db.elementos.toArray());
 
-    // Feedback visual
     setSavedSuccess(true);
     setTimeout(() => {
       setSavedSuccess(false);
-      // Limpiar formulario fotográfico
-      setCompressedPhoto(null);
-      setAnnotations([]);
+      setFotosGaleria([]);
+      setActivePhotoIndex(0);
       setObservaciones('');
-    }, 2500);
+    }, 2800);
   };
+
+  const activePhoto = fotosGaleria[activePhotoIndex];
 
   return (
     <div className="min-h-screen bg-slate-950 text-white flex flex-col pb-20">
       {/* 1. Header con indicador de red y sync */}
       <SyncStatusBadge />
 
-      {/* 2. Barra de Navegación Móvil de Alto Contraste */}
-      <header className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+      {/* 2. Barra de Navegación Móvil Compacta */}
+      <header className="px-3 py-2.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-2">
         <div className="flex items-center space-x-2">
-          <Link href="/" className="p-1 text-slate-400 hover:text-white rounded">
-            <ArrowLeft className="w-5 h-5" />
+          <Link href="/ingenieria/planos" className="p-1.5 text-slate-400 hover:text-white rounded-lg bg-slate-950 border border-slate-800">
+            <ArrowLeft className="w-4 h-4" />
           </Link>
           <div className="flex items-center space-x-1.5">
             <HardHat className="w-5 h-5 text-amber-500" />
-            <span className="font-black text-sm tracking-wider uppercase">CAMPO | INSPECCIÓN</span>
+            <div>
+              <span className="font-black text-xs tracking-wider uppercase block leading-none">APP DE CAMPO</span>
+              <span className="text-[10px] text-emerald-400 font-mono">{zonas.length} Zonas · {elementos.length} Hallazgos</span>
+            </div>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsQRModalOpen(true)}
-          className="flex items-center space-x-1 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-lg shadow-md transition"
-        >
-          <QrCode className="w-4 h-4" />
-          <span>Escanear QR</span>
-        </button>
+        <div className="flex items-center space-x-1.5">
+          <button
+            type="button"
+            onClick={handleFullCloudSync}
+            disabled={isSyncingCloud}
+            className="flex items-center space-x-1 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs rounded-lg shadow transition"
+          >
+            <CloudUpload className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-bounce' : ''}`} />
+            <span>{isSyncingCloud ? 'Sync...' : 'Sincronizar'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsQRModalOpen(true)}
+            className="flex items-center space-x-1 px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-lg shadow transition"
+          >
+            <QrCode className="w-3.5 h-3.5" />
+            <span>QR</span>
+          </button>
+        </div>
       </header>
 
-      {/* 3. Botón de Descarga Offline */}
-      <div className="p-4 bg-slate-900/60 border-b border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-        <div className="flex items-center space-x-2">
-          <DownloadCloud className="w-5 h-5 text-sky-400 flex-shrink-0" />
-          <div className="text-xs">
-            <span className="font-bold text-slate-200">Trabajo en Zona Ciega (Sin Señal)</span>
-            <p className="text-slate-400">Descarga los activos para relevar sin interrupciones en sótanos o naves industriales.</p>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={handleDownloadAreaOffline}
-          disabled={isDownloadingArea}
-          className="w-full sm:w-auto px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-lg transition disabled:opacity-50 whitespace-nowrap shadow"
-        >
-          {isDownloadingArea ? 'Guardando en IndexedDB...' : 'Descargar Área para Trabajo Offline'}
-        </button>
-      </div>
-
-      {downloadSuccessMsg && (
-        <div className="mx-4 mt-3 p-3 bg-emerald-950 border border-emerald-500/50 rounded-lg text-emerald-300 text-xs flex items-center space-x-2">
+      {syncMessage && (
+        <div className="mx-3 mt-2 p-2.5 bg-emerald-950 border border-emerald-500/60 rounded-xl text-emerald-200 text-xs flex items-center space-x-2">
           <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-400" />
-          <span>{downloadSuccessMsg}</span>
+          <span>{syncMessage}</span>
         </div>
       )}
 
-      {/* 4. Barra de Progreso del Relevamiento y Botón de Reporte Automático */}
-      <div className="mx-4 mt-3 p-3.5 bg-slate-900 rounded-xl border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-        <div className="w-full sm:w-2/3 space-y-1.5">
-          <div className="flex justify-between font-bold">
-            <span className="text-slate-300">Progreso del Relevamiento en Planta:</span>
-            <span className="text-emerald-400 font-mono">
-              {elementos.filter(e => e.estado_actual !== 'gris').length} de {elementos.length} Activos Relevados ({elementos.length > 0 ? Math.round((elementos.filter(e => e.estado_actual !== 'gris').length / elementos.length) * 100) : 0}%)
-            </span>
-          </div>
-          <div className="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden flex border border-slate-800">
-            <div 
-              className="bg-emerald-500 h-full transition-all duration-500" 
-              style={{ width: `${elementos.length > 0 ? Math.round((elementos.filter(e => e.estado_actual !== 'gris').length / elementos.length) * 100) : 0}%` }}
-            />
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setIsReportModalOpen(true)}
-          className="w-full sm:w-auto px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black font-extrabold rounded-lg flex items-center justify-center space-x-2 shadow-lg transition"
-        >
-          <FileSpreadsheet className="w-4 h-4" />
-          <span>Generar Reporte Automático</span>
-        </button>
-      </div>
-
-      {/* 5. Formulario de Inspección Táctil */}
-      <main className="p-4 max-w-xl mx-auto w-full space-y-6">
-        {/* Timeline / Stepper del Proceso de Relevamiento */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 space-y-2">
-          <div className="flex items-center justify-between text-xs font-bold text-slate-300">
-            <span className="flex items-center space-x-1.5 uppercase tracking-wider">
-              <Clock className="w-4 h-4 text-amber-400" />
-              <span>Timeline de Inspección del Activo</span>
-            </span>
-            <span className="text-[11px] font-mono text-emerald-400">
-              {savedSuccess ? '✅ PASO 4: CERRADO' : compressedPhoto ? 'PASO 3: EVALUACIÓN' : selectedElemento ? 'PASO 2: FOTO' : 'PASO 1: SELECCIÓN'}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-4 gap-1.5 text-center text-[10px] font-bold">
-            <div className={`p-1.5 rounded-lg border transition ${selectedElemento ? 'bg-emerald-950 text-emerald-300 border-emerald-500' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
-              ① Activo / QR
+      <main className="p-3 sm:p-4 max-w-2xl mx-auto w-full space-y-4">
+        {/* PASO 1: SELECCIONAR ZONA DE RECORRIDO (TARJETAS O MAPA TÁCTIL CON GPS) */}
+        <div className="bg-slate-900 border-2 border-sky-500/40 rounded-2xl p-3.5 space-y-3 shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span className="text-[10px] font-mono uppercase text-sky-400 font-bold block">
+                PASO 1 · SELECCIÓN DE SECTOR EN PLANTA
+              </span>
+              <h2 className="text-sm font-black text-white flex items-center space-x-1.5">
+                <Layers className="w-4 h-4 text-sky-400" />
+                <span>Zonas de Inspección Cargadas ({zonasFiltradas.length})</span>
+              </h2>
             </div>
-            <div className={`p-1.5 rounded-lg border transition ${compressedPhoto ? 'bg-emerald-950 text-emerald-300 border-emerald-500' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
-              ② Foto WebP
-            </div>
-            <div className={`p-1.5 rounded-lg border transition ${gradoCorrosion ? 'bg-amber-950 text-amber-300 border-amber-500' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
-              ③ ISO & Tiempo
-            </div>
-            <div className={`p-1.5 rounded-lg border transition ${savedSuccess ? 'bg-emerald-500 text-black border-emerald-400' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>
-              ④ Cierre
-            </div>
-          </div>
-        </div>
 
-        {/* Selector de Elemento Activo (Lista o Mini-Mapa) */}
-        <div className="bg-slate-900 border-2 border-slate-800 rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Activo en Inspección</span>
-            <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-[11px]">
+            <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
               <button
                 type="button"
-                onClick={() => setViewMode('lista')}
-                className={`px-2.5 py-1 rounded font-bold transition ${viewMode === 'lista' ? 'bg-amber-500 text-black' : 'text-slate-400 hover:text-white'}`}
+                onClick={() => setViewMode('zonas')}
+                className={`px-2.5 py-1 rounded font-bold transition ${viewMode === 'zonas' ? 'bg-sky-500 text-black' : 'text-slate-400 hover:text-white'}`}
               >
-                📋 Lista
+                📋 Zonas ({zonasFiltradas.length})
               </button>
               <button
                 type="button"
                 onClick={() => setViewMode('mapa')}
-                className={`px-2.5 py-1 rounded font-bold transition ${viewMode === 'mapa' ? 'bg-sky-500 text-black' : 'text-slate-400 hover:text-white'}`}
+                className={`px-2.5 py-1 rounded font-bold transition ${viewMode === 'mapa' ? 'bg-amber-500 text-black' : 'text-slate-400 hover:text-white'}`}
               >
-                🗺️ Mini-Mapa
+                🗺️ Plano Planta
               </button>
             </div>
           </div>
 
-          {viewMode === 'mapa' && planos.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">Toca un pin sobre el plano para seleccionarlo:</span>
-                {planos.length > 1 && (
-                  <select
-                    value={selectedPlanoId}
-                    onChange={(e) => setSelectedPlanoId(e.target.value)}
-                    className="bg-slate-950 border border-slate-700 text-[11px] text-white rounded p-1"
-                  >
-                    {planos.map(p => (
-                      <option key={p.id} value={p.id}>{p.titulo}</option>
-                    ))}
-                  </select>
-                )}
+          {/* Barra GPS en Vivo para auto-detectar en qué Zona está parado el inspector */}
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center space-x-2">
+              <Compass className={`w-4 h-4 text-emerald-400 ${isGettingGps ? 'animate-spin' : ''}`} />
+              <div>
+                <span className="font-bold text-slate-200 block">
+                  {gpsData ? `📍 GPS: ${gpsData.lat}, ${gpsData.lng} (±${gpsData.precision_m}m)` : 'Ubicación Satelital en Planta'}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  {gpsData ? 'Proyectado sobre el Lay Out General' : 'Detecta automáticamente en cuál de las zonas estás parado'}
+                </span>
               </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleCaptureGPS}
+              disabled={isGettingGps}
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs flex items-center space-x-1 shadow transition"
+            >
+              <Navigation className="w-3.5 h-3.5" />
+              <span>{isGettingGps ? 'Ubicando...' : 'Ubicarme por GPS'}</span>
+            </button>
+          </div>
+          {gpsError && <p className="text-[11px] text-amber-400">{gpsError}</p>}
 
-              {/* Contenedor del Mini-Mapa Táctil */}
-              <div className="relative w-full h-56 bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center">
-                {planos.find(p => p.id === selectedPlanoId)?.archivo_data_url ? (
-                  <img
-                    src={planos.find(p => p.id === selectedPlanoId)?.archivo_data_url}
-                    alt="Plano"
-                    className="w-full h-full object-contain pointer-events-none opacity-80"
-                  />
-                ) : (
-                  <div className="text-center p-4 text-xs text-slate-500">
-                    <MapIcon className="w-8 h-8 text-slate-600 mx-auto mb-1" />
-                    <span>Plano arquitectónico vectorial</span>
-                  </div>
-                )}
-
-                {/* Pines superpuestos sobre el plano */}
-                {elementos.map(elem => {
-                  const isSelected = selectedElemento?.id === elem.id;
-                  const currentPlano = planos.find(p => p.id === selectedPlanoId) || planos[0];
-                  const vbWidth = currentPlano?.dimensiones_viewbox.width || 1600;
-                  const vbHeight = currentPlano?.dimensiones_viewbox.height || 900;
-                  const leftPct = (elem.coordenadas_pin.x / vbWidth) * 100;
-                  const topPct = (elem.coordenadas_pin.y / vbHeight) * 100;
+          {/* VISTA A: LISTA DE LAS ZONAS CARGADAS */}
+          {viewMode === 'zonas' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {zonasFiltradas.length === 0 ? (
+                <div className="col-span-2 p-4 bg-slate-950 rounded-xl border border-slate-800 text-center space-y-2 text-xs text-slate-400">
+                  <p>No se encontraron zonas en la memoria local.</p>
+                  <button
+                    type="button"
+                    onClick={handleFullCloudSync}
+                    className="px-3 py-1.5 bg-indigo-600 text-white font-bold rounded-lg"
+                  >
+                    Descargar Zonas desde Neon Cloud
+                  </button>
+                </div>
+              ) : (
+                zonasFiltradas.map((z) => {
+                  const isSelected = selectedZona?.id === z.id;
+                  const inspZonaCount = inspeccionesLocales.filter(
+                    i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`
+                  ).length;
+                  const elemsZonaCount = elementos.filter(e => e.zona_id === z.id).length;
+                  const areaM2 = z.superficie_estimada_m2 || calculatePolygonAreaM2(z.poligono_svg?.puntos || [], geoCal);
 
                   return (
                     <button
-                      key={elem.id}
+                      key={z.id}
                       type="button"
-                      onClick={() => setSelectedElemento(elem)}
-                      style={{ left: `${leftPct}%`, top: `${topPct}%` }}
-                      className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full flex items-center justify-center shadow-lg transition transform ${
-                        isSelected 
-                          ? 'w-7 h-7 ring-4 ring-white z-20 scale-125' 
-                          : 'w-5 h-5 hover:scale-110 z-10'
-                      } ${
-                        elem.estado_actual === 'rojo' ? 'bg-red-500 text-white' :
-                        elem.estado_actual === 'naranja' ? 'bg-orange-500 text-white' :
-                        elem.estado_actual === 'amarillo' ? 'bg-amber-400 text-black' :
-                        elem.estado_actual === 'verde' ? 'bg-emerald-500 text-black' : 'bg-slate-600 text-white'
+                      onClick={() => handleSelectZonaForTour(z)}
+                      className={`text-left p-3 rounded-xl border transition flex flex-col justify-between ${
+                        isSelected
+                          ? 'bg-sky-950/80 border-sky-400 ring-1 ring-sky-400 shadow-lg'
+                          : 'bg-slate-950/90 border-slate-800 hover:border-slate-700'
                       }`}
-                      title={`${elem.tag_codigo} (${elem.estado_actual})`}
                     >
-                      <MapPin className="w-3.5 h-3.5" />
+                      <div>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-mono font-black text-xs text-sky-400 truncate">
+                            {z.codigo}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+                            z.estado_salud_apriori === 'critico' ? 'bg-red-950 text-red-300 border border-red-700' :
+                            z.estado_salud_apriori === 'malo' ? 'bg-orange-950 text-orange-300 border border-orange-700' :
+                            z.estado_salud_apriori === 'bueno' ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' :
+                            'bg-amber-950 text-amber-300 border border-amber-700'
+                          }`}>
+                            {z.estado_salud_apriori || 'Regular'}
+                          </span>
+                        </div>
+                        <p className="text-xs font-semibold text-white mt-1 line-clamp-2">
+                          {z.nombre}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 mt-2.5 pt-2 border-t border-slate-800/80 font-mono">
+                        <span>📐 {areaM2} m²</span>
+                        <span>📍 {elemsZonaCount} hallazgos</span>
+                        <span className="text-emerald-400 font-bold">📸 {inspZonaCount} insp.</span>
+                      </div>
                     </button>
                   );
-                })}
-              </div>
+                })
+              )}
             </div>
           )}
 
-          {/* Filtro de Cota y Botón para Reportar Hallazgo en Terreno */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1 border-t border-slate-800 text-xs">
-            <div className="flex items-center space-x-1.5 w-full sm:w-auto">
-              <span className="text-slate-400 font-bold uppercase text-[10px]">Nivel:</span>
-              <select
-                value={cotaFiltro}
-                onChange={(e) => setCotaFiltro(e.target.value)}
-                className="bg-slate-950 border border-slate-700 text-amber-400 font-mono font-bold text-xs rounded px-2 py-1.5 focus:outline-none flex-1"
-              >
-                <option value="todos">🏢 Todos los Niveles</option>
-                <option value="146000">🟢 Cota +146.000 m (Suelo Base)</option>
-                <option value="152000">🟡 Cota +152.000 m (+6.00 m)</option>
-                <option value="158000">🟠 Cota +158.000 m (+12.00 m)</option>
-                <option value="170000">🔴 Cota +170.000 m (+24.00 m)</option>
-              </select>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setIsFieldPinModalOpen(true)}
-              className="w-full sm:w-auto px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white font-extrabold rounded-lg flex items-center justify-center space-x-1.5 shadow transition"
-            >
-              <MapPin className="w-3.5 h-3.5" />
-              <span>+ Reportar Hallazgo en Campo</span>
-            </button>
-          </div>
-
-          {elementos.length > 0 ? (
-            <select
-              value={selectedElemento?.id || ''}
-              onChange={(e) => {
-                const found = elementos.find(item => item.id === e.target.value);
-                if (found) setSelectedElemento(found);
-              }}
-              className="w-full bg-slate-950 border border-slate-700 text-white font-mono font-bold text-base rounded-lg p-2.5 focus:border-amber-400 focus:outline-none"
-            >
-              {elementos
-                .filter(el => cotaFiltro === 'todos' || String(el.cota_nivel || 146000) === cotaFiltro)
-                .map(elem => (
-                  <option key={elem.id} value={elem.id}>
-                    {elem.tag_codigo} - {elem.geometria_parametros.perfil || elem.tipo_elemento} ({elem.codigo_equipo_erp || 'ERP'}) {elem.creado_en_campo ? '· [HALLAZGO CAMPO]' : ''}
-                  </option>
-                ))}
-            </select>
-          ) : (
-            <div className="p-3 bg-amber-950/60 border border-amber-500/40 rounded-lg text-amber-200 text-xs space-y-2">
-              <p>
-                No hay activos mapeados todavía. Sube el plano de tu planta en Ingeniería para trazar zonas y colocar pines de activos.
-              </p>
-              <Link
-                href="/ingenieria/planos"
-                className="inline-flex items-center space-x-1 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded text-xs"
-              >
-                <span>Ir al Visor y Subir Plano</span>
-                <ChevronRight className="w-4 h-4" />
-              </Link>
-            </div>
-          )}
-
-          {selectedElemento && (
+          {/* VISTA B: MINI-MAPA TÁCTIL CON LOS POLÍGONOS DE LAS ZONAS Y POSICIÓN GPS */}
+          {viewMode === 'mapa' && currentPlano && (
             <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-2 text-xs bg-slate-950/80 p-2.5 rounded border border-slate-800/80">
-                <div>
-                  <span className="text-slate-500 block">Ubicación / ERP:</span>
-                  <span className="font-mono text-slate-300">{selectedElemento.codigo_equipo_erp || 'S/D'}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">Geometría:</span>
-                  <span className="font-mono text-slate-300">{selectedElemento.geometria_parametros.longitud_m}m · {selectedElemento.geometria_parametros.m2_superficie}m²</span>
-                </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>Toca cualquier polígono de Zona o Pin en el plano:</span>
+                <span className="font-mono text-sky-400">{currentPlano.titulo}</span>
               </div>
 
-              {/* Zona / Paquete de Intervención Multinivel Pre-armado */}
-              {(() => {
-                const currentZona = zonas.find(z => z.id === selectedElemento.zona_id) || zonas[0];
-                return (
-                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs">
-                    <div>
-                      <div className="flex items-center space-x-1.5">
-                        <Layers className="w-3.5 h-3.5 text-amber-400" />
-                        <span className="font-bold text-white">Zona: {currentZona ? currentZona.codigo : 'General'}</span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800">
-                          {currentZona?.nombre_nivel || `Cota +${((currentZona?.cota_nivel || 146000) / 1000).toFixed(3)} m`}
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-slate-400 block mt-0.5 truncate max-w-[210px] sm:max-w-xs">
-                        {currentZona?.nombre || 'Sector de Intervención pre-armado'}
-                      </span>
-                    </div>
+              <div className="relative w-full h-72 bg-[#070b13] rounded-xl border border-slate-800 overflow-hidden">
+                <svg
+                  viewBox={`0 0 ${currentPlano.dimensiones_viewbox?.width || 7680} ${currentPlano.dimensiones_viewbox?.height || 5433}`}
+                  className="w-full h-full object-contain"
+                >
+                  {currentPlano.svg_content ? (
+                    <g dangerouslySetInnerHTML={{ __html: currentPlano.svg_content }} />
+                  ) : (
+                    (currentPlano.archivo_data_url || currentPlano.archivo_original_url) && (
+                      <image
+                        href={(currentPlano.archivo_data_url || currentPlano.archivo_original_url)!}
+                        x="0"
+                        y="0"
+                        width={currentPlano.dimensiones_viewbox?.width || 7680}
+                        height={currentPlano.dimensiones_viewbox?.height || 5433}
+                        preserveAspectRatio="xMidYMid meet"
+                      />
+                    )
+                  )}
 
-                    <button
-                      type="button"
-                      onClick={() => setIsAjustarZonaModalOpen(true)}
-                      className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-black font-extrabold rounded text-[11px] flex items-center space-x-1 shadow transition flex-shrink-0"
-                      title="Ajustar parámetros reales de la zona pre-armada en oficina"
-                    >
-                      <span>⚙️ Ajustar Zona</span>
-                    </button>
-                  </div>
-                );
-              })()}
+                  {/* Polígonos de las Zonas en el Mapa Móvil (Solo líneas limpias + toque directo) */}
+                  {zonasFiltradas.map((z) => {
+                    const isSelected = selectedZona?.id === z.id;
+                    const pts = z.poligono_svg?.puntos || [];
+                    if (pts.length < 3) return null;
+                    const pointsStr = pts.map(p => `${p.x},${p.y}`).join(' ');
+                    const vbW = currentPlano.dimensiones_viewbox?.width || 7680;
+                    const s = Math.max(1, vbW / 900);
 
-              {/* Módulo de Georreferenciación GPS Satelital */}
-              <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-300 font-bold flex items-center space-x-1.5">
-                    <Globe className="w-4 h-4 text-sky-400" />
-                    <span>Georreferenciación Satelital (GPS de Campo)</span>
-                  </span>
+                    return (
+                      <g
+                        key={z.id}
+                        onClick={() => handleSelectZonaForTour(z)}
+                        className="cursor-pointer"
+                      >
+                        <polygon
+                          points={pointsStr}
+                          fill={isSelected ? 'rgba(14, 165, 233, 0.28)' : 'rgba(56, 189, 248, 0.10)'}
+                          stroke={isSelected ? '#38bdf8' : '#0284c7'}
+                          strokeWidth={(isSelected ? 3 : 2) * s}
+                        />
+                      </g>
+                    );
+                  })}
+
+                  {/* Pines de Hallazgos / Elementos */}
+                  {elementos.map((elem) => {
+                    const vbW = currentPlano.dimensiones_viewbox?.width || 7680;
+                    const s = Math.max(1, vbW / 900);
+                    return (
+                      <circle
+                        key={elem.id}
+                        cx={elem.coordenadas_pin.x}
+                        cy={elem.coordenadas_pin.y}
+                        r={8 * s}
+                        fill={elem.estado_actual === 'rojo' ? '#ef4444' : elem.estado_actual === 'naranja' ? '#f97316' : '#f59e0b'}
+                        stroke="#fff"
+                        strokeWidth={2 * s}
+                        onClick={() => {
+                          setSelectedElemento(elem);
+                          setInspectionTargetMode('elemento');
+                          const z = zonas.find(zn => zn.id === elem.zona_id);
+                          if (z) setSelectedZona(z);
+                        }}
+                      />
+                    );
+                  })}
+
+                  {/* Punto Azul "Estás Aquí" del GPS del Inspector */}
+                  {gpsData?.pixelX && gpsData?.pixelY && (
+                    <g>
+                      <circle
+                        cx={gpsData.pixelX}
+                        cy={gpsData.pixelY}
+                        r={24 * Math.max(1, (currentPlano.dimensiones_viewbox?.width || 7680) / 900)}
+                        fill="rgba(16, 185, 129, 0.25)"
+                      />
+                      <circle
+                        cx={gpsData.pixelX}
+                        cy={gpsData.pixelY}
+                        r={10 * Math.max(1, (currentPlano.dimensiones_viewbox?.width || 7680) / 900)}
+                        fill="#10b981"
+                        stroke="#ffffff"
+                        strokeWidth={3 * Math.max(1, (currentPlano.dimensiones_viewbox?.width || 7680) / 900)}
+                      />
+                    </g>
+                  )}
+                </svg>
+              </div>
+            </div>
+          )}
+
+          {/* Panel de la Zona Actualmente Seleccionada y Selector de Alcance (Zona General vs Hallazgo Puntual) */}
+          {selectedZona && (
+            <div className="bg-slate-950 p-3 rounded-xl border border-sky-500/40 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-mono text-sky-400 font-bold uppercase">ZONA ACTIVA EN RECORRIDO:</span>
+                  <h3 className="text-sm font-black text-white">
+                    {selectedZona.codigo} — {selectedZona.nombre}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAjustarZonaModalOpen(true)}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold rounded-lg text-[11px] flex-shrink-0"
+                >
+                  ⚙️ Andamio Zona
+                </button>
+              </div>
+
+              {/* ¿Qué desea relevar dentro de esta Zona? */}
+              <div className="space-y-2 pt-1 border-t border-slate-800">
+                <span className="text-[11px] text-slate-300 font-bold block">
+                  ¿Qué estás relevando en esta Zona?
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={handleCaptureGPS}
-                    disabled={isGettingGps}
-                    className="px-2.5 py-1 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded text-[11px] flex items-center space-x-1 transition disabled:opacity-50"
+                    onClick={() => setInspectionTargetMode('zona_general')}
+                    className={`p-2.5 rounded-xl border text-left transition ${
+                      inspectionTargetMode === 'zona_general'
+                        ? 'bg-sky-500/20 border-sky-400 text-white font-bold'
+                        : 'bg-slate-900 border-slate-800 text-slate-400'
+                    }`}
                   >
-                    <Navigation className="w-3.5 h-3.5" />
-                    <span>{isGettingGps ? 'Leyendo GPS...' : gpsData ? 'Actualizar GPS' : 'Capturar GPS'}</span>
+                    <span className="block text-xs">🏢 Estado General de la Zona</span>
+                    <span className="text-[10px] text-slate-400 font-normal">
+                      Evalúa pintura, corrosión, andamio y fotos generales del sector
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (elementosDeZona.length === 0) {
+                        setIsFieldPinModalOpen(true);
+                      } else {
+                        setInspectionTargetMode('elemento');
+                        if (!selectedElemento) setSelectedElemento(elementosDeZona[0]);
+                      }
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition ${
+                      inspectionTargetMode === 'elemento'
+                        ? 'bg-amber-500/20 border-amber-400 text-white font-bold'
+                        : 'bg-slate-900 border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    <span className="block text-xs">📍 Elemento / Hallazgo Puntual ({elementosDeZona.length})</span>
+                    <span className="text-[10px] text-slate-400 font-normal">
+                      Identifica una columna, viga, soporte, cañería o interferencia
+                    </span>
                   </button>
                 </div>
 
-                {gpsData ? (
-                  <div className="flex items-center justify-between bg-sky-950/40 p-2 rounded border border-sky-800/60 font-mono text-[11px] text-sky-200">
-                    <div>
-                      <span>📍 Lat: {gpsData.lat}, Lng: {gpsData.lng}</span>
-                      <span className="text-[10px] text-slate-400 block">Precisión: ±{gpsData.precision_m} m</span>
-                    </div>
-                    <a
-                      href={`https://www.google.com/maps?q=${gpsData.lat},${gpsData.lng}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-amber-400 underline text-[11px] hover:text-amber-300"
+                {/* Lista de elementos de la zona o botón para agregar uno nuevo */}
+                <div className="flex items-center gap-2 pt-1">
+                  {elementosDeZona.length > 0 && (
+                    <select
+                      value={selectedElemento?.id || ''}
+                      onChange={(e) => {
+                        const found = elementosDeZona.find(el => el.id === e.target.value);
+                        if (found) {
+                          setSelectedElemento(found);
+                          setInspectionTargetMode('elemento');
+                        }
+                      }}
+                      className="flex-1 bg-slate-900 border border-slate-700 text-white font-mono text-xs rounded-lg p-2"
                     >
-                      Ver en Maps ↗
-                    </a>
-                  </div>
-                ) : (
-                  <p className="text-[11px] text-slate-500">
-                    Usa GPS en áreas abiertas (patios, tanques, efluentes). En naves cerradas, el código QR y el pin sobre plano garantizan precisión exacta.
-                  </p>
-                )}
+                      {elementosDeZona.map(el => (
+                        <option key={el.id} value={el.id}>
+                          📍 {el.tag_codigo} ({el.tipo_elemento.replace('_', ' ')})
+                        </option>
+                      ))}
+                    </select>
+                  )}
 
-                {gpsError && (
-                  <p className="text-[11px] text-amber-400 font-medium">{gpsError}</p>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => setIsFieldPinModalOpen(true)}
+                    className="px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-lg text-xs flex items-center space-x-1 shadow flex-shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Agregar Elemento / Hallazgo en {selectedZona.codigo}</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
         </div>
 
-        <form onSubmit={handleSaveInspection} className="space-y-6">
-          {/* Captura de Foto con Compresión Automática */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+        {/* PASO 2: GALERÍA MULTI-FOTO WEBP Y EVALUACIÓN TÉCNICA */}
+        <form onSubmit={handleSaveInspection} className="space-y-4">
+          {/* Galería Multi-Foto por Zona / Hallazgo */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
-                <Camera className="w-4 h-4 text-amber-400" />
-                <span>Foto de Evidencia con Compresión WebP</span>
-              </span>
-              <span className="text-[10px] text-amber-400 font-mono">Máx 1600px · ~180KB</span>
+              <div>
+                <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-1.5">
+                  <Camera className="w-4 h-4 text-amber-400" />
+                  <span>Galería Fotográfica de la Zona ({fotosGaleria.length} fotos)</span>
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  Podés subir múltiples fotos por zona. Cada foto se comprime a WebP (~180KB) y admite dibujo y nota individual.
+                </span>
+              </div>
+
+              <label className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-lg cursor-pointer flex items-center space-x-1 shadow flex-shrink-0">
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Agregar Fotos</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleMultiPhotoUpload}
+                  className="hidden"
+                />
+              </label>
             </div>
 
-            {!compressedPhoto ? (
-              <label className="border-2 border-dashed border-slate-700 hover:border-amber-400 rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-950/50 hover:bg-slate-950 transition">
-                <Camera className="w-10 h-10 text-slate-400 mb-2" />
-                <span className="text-sm font-bold text-slate-200">Tomar o Seleccionar Fotografía</span>
+            {isCompressing && (
+              <div className="text-center py-2 text-xs text-amber-400 font-mono animate-pulse">
+                Comprimiendo fotografías a WebP de alta eficiencia...
+              </div>
+            )}
+
+            {fotosGaleria.length === 0 ? (
+              <label className="border-2 border-dashed border-slate-700 hover:border-amber-400 rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-950/60 hover:bg-slate-950 transition">
+                <Camera className="w-9 h-9 text-amber-400 mb-2" />
+                <span className="text-sm font-bold text-slate-200">
+                  Tomar Fotos de {inspectionTargetMode === 'elemento' && selectedElemento ? selectedElemento.tag_codigo : selectedZona?.codigo || 'Zona'}
+                </span>
                 <span className="text-xs text-slate-500 mt-1 text-center">
-                  Compresión automática a WebP en el navegador (reduce de ~8MB a ~180KB)
+                  Permite seleccionar o capturar varias fotos seguidas del recorrido
                 </span>
                 <input
                   type="file"
                   accept="image/*"
-                  capture="environment"
-                  onChange={handlePhotoUpload}
+                  multiple
+                  onChange={handleMultiPhotoUpload}
                   className="hidden"
                 />
               </label>
             ) : (
               <div className="space-y-3">
-                {/* Banner de Ahorro de Almacenamiento */}
-                <div className="bg-emerald-950/70 border border-emerald-500/50 rounded-lg p-2.5 text-xs text-emerald-200 flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Sparkles className="w-4 h-4 text-emerald-400" />
-                    <span>
-                      Original: <strong>{(compressedPhoto.originalSizeBytes / (1024 * 1024)).toFixed(2)} MB</strong> → WebP: <strong>{(compressedPhoto.compressedSizeBytes / 1024).toFixed(0)} KB</strong>
-                    </span>
+                {/* Miniaturas del Carrusel Multi-Foto */}
+                <div className="flex items-center space-x-2 overflow-x-auto pb-1">
+                  {fotosGaleria.map((f, idx) => (
+                    <div
+                      key={f.id || idx}
+                      onClick={() => setActivePhotoIndex(idx)}
+                      className={`relative w-16 h-16 rounded-lg overflow-hidden border-2 cursor-pointer flex-shrink-0 transition ${
+                        idx === activePhotoIndex ? 'border-amber-400 ring-2 ring-amber-400/50 scale-105' : 'border-slate-700 opacity-70'
+                      }`}
+                    >
+                      <img src={f.thumbnail_data_url} alt={`Foto ${idx + 1}`} className="w-full h-full object-cover" />
+                      <span className="absolute bottom-0 left-0 right-0 bg-black/75 text-[9px] font-mono text-center text-white">
+                        #{idx + 1} ({Math.round(f.peso_bytes / 1024)}KB)
+                      </span>
+                    </div>
+                  ))}
+
+                  <label className="w-16 h-16 rounded-lg border-2 border-dashed border-slate-700 hover:border-amber-400 flex flex-col items-center justify-center cursor-pointer text-slate-400 hover:text-amber-400 flex-shrink-0">
+                    <Plus className="w-5 h-5" />
+                    <span className="text-[9px] font-bold">+ Foto</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleMultiPhotoUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                {/* Editor Vectorial y Comentario de la Foto Seleccionada */}
+                {activePhoto && (
+                  <div className="space-y-2.5 bg-slate-950 p-3 rounded-xl border border-slate-800">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-amber-400 font-mono">
+                        Editando Foto #{activePhotoIndex + 1} de {fotosGaleria.length}
+                        {lastCompressionRatio ? ` (-${lastCompressionRatio}% WebP)` : ''}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePhoto(activePhotoIndex)}
+                        className="text-red-400 hover:text-red-300 flex items-center space-x-1 text-[11px]"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Quitar esta foto</span>
+                      </button>
+                    </div>
+
+                    <VectorAnnotationCanvas
+                      imageSrc={activePhoto.thumbnail_data_url}
+                      annotations={activePhoto.anotaciones_canvas}
+                      onChange={handleUpdateActivePhotoAnnotations}
+                    />
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">
+                        Comentario / Identificación en Foto #{activePhotoIndex + 1}:
+                      </label>
+                      <input
+                        type="text"
+                        value={activePhoto.comentario || ''}
+                        onChange={(e) => handleUpdateActivePhotoComment(e.target.value)}
+                        placeholder="Ej: Corrosión severa en apoyo de viga / Interferencia cañería para andamio..."
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:border-amber-400 focus:outline-none"
+                      />
+                    </div>
                   </div>
-                  <span className="font-mono font-bold text-emerald-300 bg-emerald-900/80 px-2 py-0.5 rounded">
-                    -{compressedPhoto.ratioReducedPercent}%
-                  </span>
-                </div>
-
-                {/* Lienzo de Anotaciones Vectoriales */}
-                <VectorAnnotationCanvas
-                  imageSrc={compressedPhoto.dataUrl}
-                  annotations={annotations}
-                  onChange={setAnnotations}
-                />
-
-                <div className="flex justify-between items-center text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setCompressedPhoto(null)}
-                    className="text-red-400 hover:underline"
-                  >
-                    Descartar y tomar otra foto
-                  </button>
-                  <span className="text-slate-400">Miniatura lista para galería</span>
-                </div>
-              </div>
-            )}
-
-            {isCompressing && (
-              <div className="text-center py-3 text-xs text-amber-400 animate-pulse">
-                Comprimiendo imagen en el dispositivo...
+                )}
               </div>
             )}
           </div>
 
-          {/* Clasificación Técnica de Corrosión */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4">
+          {/* Clasificación Técnica de Corrosión ISO 4628 */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
             <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
-              Evaluación Técnica de Degradación
+              Evaluación Técnica ({inspectionTargetMode === 'elemento' && selectedElemento ? `Activo: ${selectedElemento.tag_codigo}` : `Zona: ${selectedZona?.codigo || 'General'}`})
             </span>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
@@ -720,9 +1012,8 @@ export default function CampoPage() {
                 >
                   <option value="acero_al_carbono">Acero al Carbono Estructural</option>
                   <option value="acero_galvanizado">Acero Galvanizado en Caliente</option>
-                  <option value="acero_inoxidable_304">Acero Inoxidable 304</option>
-                  <option value="acero_inoxidable_316">Acero Inoxidable 316</option>
-                  <option value="fundicion_hierro">Fundición de Hierro</option>
+                  <option value="acero_inoxidable_304">Acero Inoxidable 304 / 316</option>
+                  <option value="hormigon_armado">Hormigón Industrial / Pedestales</option>
                 </select>
               </div>
 
@@ -736,12 +1027,11 @@ export default function CampoPage() {
                   <option value="epoxi_poliamida">Epoxi Poliamida + Poliuretano</option>
                   <option value="alquidico_sintetico">Esmalte Alquídico Sintético</option>
                   <option value="silicato_zinc">Silicato Inorgánico de Zinc</option>
-                  <option value="sin_recubrimiento">Sin Recubrimiento (Acero Negro)</option>
+                  <option value="sin_recubrimiento">Sin Recubrimiento</option>
                 </select>
               </div>
             </div>
 
-            {/* Selector de Grado de Corrosión ISO 4628 / ASTM D610 */}
             <div>
               <div className="flex justify-between items-center mb-1 text-xs">
                 <label className="text-slate-300 font-semibold">Grado de Corrosión (ISO 4628 / ASTM D610)</label>
@@ -763,20 +1053,11 @@ export default function CampoPage() {
                   </button>
                 ))}
               </div>
-              <span className="text-[10px] text-slate-500 mt-1 block">
-                {gradoCorrosion === 'Ri 0' && 'Sin oxidación visible'}
-                {gradoCorrosion === 'Ri 1' && 'Oxidación leve en puntos aislados (<0.05%)'}
-                {gradoCorrosion === 'Ri 2' && 'Puntos de óxido dispersos (<0.5%)'}
-                {gradoCorrosion === 'Ri 3' && 'Ampollado y oxidación incipiente (~1%)'}
-                {gradoCorrosion === 'Ri 4' && 'Oxidación extendida con descascaramiento (~8%)'}
-                {gradoCorrosion === 'Ri 5' && 'Corrosión generalizada y pérdida de espesor (40-50%)'}
-              </span>
             </div>
 
-            {/* Slider de porcentaje afectado */}
             <div>
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-slate-400">Porcentaje de Superficie Afectada</span>
+                <span className="text-slate-400">Porcentaje de Superficie Afectada en el Sector</span>
                 <span className="font-mono font-bold text-white">{porcentajeAfectado}%</span>
               </div>
               <input
@@ -790,12 +1071,11 @@ export default function CampoPage() {
               />
             </div>
 
-            {/* Switch de Reemplazo Estructural */}
             <div className="flex items-center justify-between bg-slate-950 p-3 rounded-lg border border-slate-800">
               <div>
-                <span className="text-xs font-bold text-white block">¿Requiere Reemplazo Estructural?</span>
+                <span className="text-xs font-bold text-white block">¿Requiere Reemplazo Estructural / Calderería?</span>
                 <span className="text-[11px] text-slate-400">
-                  Activar si hay perforación, pérdida de sección &gt; 25% o deformación plástica.
+                  Activar si hay perforación o pérdida de sección &gt; 25%.
                 </span>
               </div>
               <input
@@ -806,25 +1086,24 @@ export default function CampoPage() {
               />
             </div>
 
-            {/* Observaciones */}
             <div>
-              <label className="text-xs text-slate-400 block mb-1">Observaciones de Campo</label>
+              <label className="text-xs text-slate-400 block mb-1">Observaciones Generales del Recorrido en Zona</label>
               <textarea
                 value={observaciones}
                 onChange={(e) => setObservaciones(e.target.value)}
-                placeholder="Detalles de soldadura, accesibilidad de andamio, riesgo eléctrico..."
+                placeholder="Describe el estado de las estructuras, interferencias para andamios, riesgos operativos..."
                 rows={2}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
               />
             </div>
           </div>
 
-          {/* Estimación de Andamio y Logística de Acceso desde el Campo */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+          {/* Validación de Andamio y Acceso en Campo */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
                 <HardHat className="w-4 h-4 text-amber-400" />
-                <span>Requerimiento de Andamio y Acceso (Estimado en Terreno)</span>
+                <span>Validación de Andamio en Terreno</span>
               </span>
               <label className="flex items-center space-x-1.5 cursor-pointer">
                 <input
@@ -837,7 +1116,7 @@ export default function CampoPage() {
               </label>
             </div>
 
-            {requiereAndamioCampo ? (
+            {requiereAndamioCampo && (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
                 <div>
                   <label className="text-slate-400 block mb-1">Tipo de Acceso</label>
@@ -853,7 +1132,7 @@ export default function CampoPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="text-slate-400 block mb-1">Altura de Trabajo (m)</label>
+                  <label className="text-slate-400 block mb-1">Altura (m)</label>
                   <input
                     type="number"
                     step="0.5"
@@ -863,7 +1142,7 @@ export default function CampoPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-slate-400 block mb-1">Volumen Estimado (m³)</label>
+                  <label className="text-slate-400 block mb-1">Volumen (m³)</label>
                   <input
                     type="number"
                     value={volumenAndamioCampo}
@@ -872,117 +1151,47 @@ export default function CampoPage() {
                   />
                 </div>
               </div>
-            ) : (
-              <p className="text-[11px] text-slate-500">
-                Intervención ejecutable a nivel de piso o pasarela existente sin necesidad de montaje de andamio.
-              </p>
             )}
           </div>
 
-          {/* Contador Temporal, Envejecimiento y Proyección de Deterioro */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
-                <TrendingUp className="w-4 h-4 text-purple-400" />
-                <span>Envejecimiento y Tasa de Avance (ISO 12944)</span>
-              </span>
-              <span className="text-[10px] text-purple-400 font-mono">KPI Ventana Óptima</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div>
-                <label className="text-slate-400 block mb-1">Antigüedad Estructura</label>
-                <div className="flex items-center space-x-1">
-                  <input
-                    type="number"
-                    min="0"
-                    value={antiguedadAnios}
-                    onChange={(e) => setAntiguedadAnios(Number(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono"
-                  />
-                  <span className="text-slate-400 text-xs">años</span>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-slate-400 block mb-1">Último Recubrimiento</label>
-                <div className="flex items-center space-x-1">
-                  <input
-                    type="number"
-                    min="0"
-                    value={ultimoRevestimientoAnios}
-                    onChange={(e) => setUltimoRevestimientoAnios(Number(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono"
-                  />
-                  <span className="text-slate-400 text-xs">años</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1.5 text-xs">
-              <div className="flex justify-between">
-                <label className="text-slate-400">Tasa de Degradación Anual Estimada:</label>
-                <span className="font-mono font-bold text-purple-300">+{tasaAvancePct}% / año</span>
-              </div>
-              <input
-                type="range"
-                min="1"
-                max="20"
-                step="1"
-                value={tasaAvancePct}
-                onChange={(e) => setTasaAvancePct(Number(e.target.value))}
-                className="w-full accent-purple-500"
-              />
-              <div className="flex justify-between text-[10px] text-slate-500">
-                <span>Leve / C2 (1-3%)</span>
-                <span>Industrial / C4 (4-8%)</span>
-                <span>Severo / C5 (9-20%)</span>
-              </div>
-            </div>
-
-            {/* Alerta de Ventana de Intervención Óptima */}
-            <div className="bg-purple-950/40 border border-purple-500/40 rounded-lg p-2.5 text-xs text-purple-200 flex items-center justify-between">
-              <div>
-                <span className="font-bold block">Ventana de Intervención Recomendada:</span>
-                <span className="text-[11px] text-purple-300">
-                  Intervenir antes de <strong>{Math.max(1, Math.round(((Math.max(40, porcentajeAfectado + 10) - porcentajeAfectado) / Math.max(1, tasaAvancePct)) * 12))} meses</strong> para evitar reemplazo estructural
-                </span>
-              </div>
-              <span className="text-sm font-black font-mono bg-purple-900/60 px-2.5 py-1 rounded text-purple-300">
-                ~{Math.max(1, Math.round(((Math.max(40, porcentajeAfectado + 10) - porcentajeAfectado) / Math.max(1, tasaAvancePct)) * 12))} m
-              </span>
-            </div>
-          </div>
-
-          {/* Botón Guardar Inspección */}
+          {/* Botón Guardar y Sincronizar */}
           <button
             type="submit"
             className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-sm uppercase tracking-wider rounded-xl shadow-xl transition flex items-center justify-center space-x-2"
           >
             <Save className="w-5 h-5" />
-            <span>Guardar Inspección en Memoria Local</span>
+            <span>
+              Guardar Relevamiento ({fotosGaleria.length} fotos) y Sincronizar
+            </span>
           </button>
         </form>
 
         {savedSuccess && (
-          <div className="p-4 bg-emerald-950 border-2 border-emerald-500 rounded-xl text-emerald-300 text-center font-bold text-sm animate-bounce">
-            ✓ ¡Inspección guardada localmente y encolada para sincronización!
+          <div className="p-4 bg-emerald-950 border-2 border-emerald-500 rounded-xl text-emerald-300 text-center font-bold text-sm">
+            ✓ ¡Relevamiento guardado y sincronizado con Neon PostgreSQL y Backblaze B2!
           </div>
         )}
 
-        {/* Historial Reciente en el Dispositivo */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+        {/* Historial de Inspecciones Registradas */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
               <Clock className="w-4 h-4 text-sky-400" />
-              <span>Inspecciones Locales en Dispositivo</span>
+              <span>Historial de Relevamientos ({inspeccionesLocales.length})</span>
             </span>
-            <span className="text-xs font-mono text-slate-400">{inspeccionesLocales.length} registros</span>
+            <button
+              type="button"
+              onClick={() => setIsReportModalOpen(true)}
+              className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center space-x-1"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>Ver Reporte</span>
+            </button>
           </div>
 
-          <div className="space-y-2 max-h-48 overflow-y-auto">
+          <div className="space-y-2 max-h-60 overflow-y-auto">
             {inspeccionesLocales.length === 0 ? (
-              <p className="text-xs text-slate-500 py-2 text-center">No hay inspecciones guardadas en este dispositivo.</p>
+              <p className="text-xs text-slate-500 py-2 text-center">Aún no hay inspecciones registradas.</p>
             ) : (
               inspeccionesLocales.map((insp) => (
                 <div
@@ -990,9 +1199,11 @@ export default function CampoPage() {
                   className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs"
                 >
                   <div>
-                    <span className="font-mono font-bold text-amber-400 block">{insp.elemento_id}</span>
+                    <span className="font-mono font-bold text-amber-400 block">
+                      {insp.zona_codigo ? `[Zona ${insp.zona_codigo}] ` : ''}{insp.elemento_id}
+                    </span>
                     <span className="text-[10px] text-slate-400">
-                      {insp.grado_corrosion} · {insp.porcentaje_afectado}% afectado {insp.requiere_reemplazo ? '· [REEMPLAZO]' : ''}
+                      {insp.grado_corrosion} · {insp.porcentaje_afectado}% afectado · 📸 {insp.fotos?.length || 0} fotos
                     </span>
                   </div>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -1014,7 +1225,12 @@ export default function CampoPage() {
         isOpen={isQRModalOpen}
         onClose={() => setIsQRModalOpen(false)}
         elementos={elementos}
-        onElementSelect={(elem) => setSelectedElemento(elem)}
+        onElementSelect={(elem) => {
+          setSelectedElemento(elem);
+          setInspectionTargetMode('elemento');
+          const z = zonas.find(zn => zn.id === elem.zona_id);
+          if (z) setSelectedZona(z);
+        }}
       />
 
       {/* Modal de Reporte Automático de Relevamiento */}
@@ -1022,18 +1238,19 @@ export default function CampoPage() {
         isOpen={isReportModalOpen}
         onClose={() => setIsReportModalOpen(false)}
         area={areas.find(a => a.id === selectedAreaId)}
+        plano={currentPlano}
         elementos={elementos}
         inspecciones={inspeccionesLocales}
       />
 
-      {/* Modal Rápido para Reportar Hallazgo / Pin desde el Campo */}
+      {/* Modal Rápido para Agregar Elemento / Hallazgo dentro de la Zona Activa */}
       {isFieldPinModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
           <div className="w-full max-w-md bg-slate-900 border-2 border-sky-500 rounded-2xl overflow-hidden shadow-2xl p-5 space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center space-x-2 text-white font-bold text-sm">
                 <MapPin className="w-5 h-5 text-sky-400" />
-                <span>Reportar Nuevo Hallazgo en Campo</span>
+                <span>Agregar Elemento / Hallazgo en {selectedZona?.codigo || 'Zona'}</span>
               </div>
               <button onClick={() => setIsFieldPinModalOpen(false)} className="p-1 text-slate-400 hover:text-white">
                 <X className="w-5 h-5" />
@@ -1042,10 +1259,10 @@ export default function CampoPage() {
 
             <form onSubmit={handleCreateFieldPin} className="space-y-3">
               <div>
-                <label className="text-slate-400 block mb-1">Código / TAG del Hallazgo *</label>
+                <label className="text-slate-400 block mb-1">Identificación / TAG del Elemento o Hallazgo *</label>
                 <input
                   type="text"
-                  placeholder="Ej: HALLAZGO-VIG-146, SOP-ROTO-02..."
+                  placeholder="Ej: COL-04, SOPORTE-VAPOR, BARANDA-NORTE, HITO-INTERFERENCIA..."
                   value={fieldTag}
                   onChange={(e) => setFieldTag(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white font-mono font-bold uppercase focus:border-sky-400 focus:outline-none"
@@ -1055,7 +1272,7 @@ export default function CampoPage() {
               </div>
 
               <div>
-                <label className="text-slate-400 block mb-1">Disciplina / Tipo de Elemento</label>
+                <label className="text-slate-400 block mb-1">Tipo de Elemento / Hallazgo</label>
                 <select
                   value={fieldDisciplina}
                   onChange={(e: any) => setFieldDisciplina(e.target.value)}
@@ -1067,28 +1284,20 @@ export default function CampoPage() {
                   <option value="caneria">Cañería de Proceso / Vapor</option>
                   <option value="columna_hormigon">Columna / Pedestal de Hormigón</option>
                   <option value="baranda">Baranda / Pasarela Grating</option>
+                  <option value="tanque">Tanque / Clarificador / Equipo</option>
                 </select>
               </div>
 
               <div>
-                <label className="text-slate-400 block mb-1">Cota de Nivel Georreferenciada</label>
-                <select
-                  value={fieldCota}
-                  onChange={(e) => setFieldCota(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-amber-400 font-mono font-bold"
-                >
-                  <option value={146000}>🟢 Cota +146.000 m (Nivel Suelo Base)</option>
-                  <option value={152000}>🟡 Cota +152.000 m (+6.00 m Pasarelas)</option>
-                  <option value={158000}>🟠 Cota +158.000 m (+12.00 m Operación)</option>
-                  <option value={170000}>🔴 Cota +170.000 m (+24.00 m Nivel Superior)</option>
-                </select>
+                <label className="text-slate-400 block mb-1">Ubicación / Descripción Corta</label>
+                <input
+                  type="text"
+                  placeholder="Ej: Sector ingreso bombas de lodos, junto a escalera..."
+                  value={fieldDescripcion}
+                  onChange={(e) => setFieldDescripcion(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white"
+                />
               </div>
-
-              {gpsData && (
-                <div className="bg-sky-950/40 p-2 rounded border border-sky-800 text-[11px] text-sky-300 font-mono">
-                  📍 Se vinculará con GPS actual: {gpsData.lat}, {gpsData.lng} (±{gpsData.precision_m}m)
-                </div>
-              )}
 
               <div className="flex justify-end space-x-2 pt-2 border-t border-slate-800">
                 <button
@@ -1102,7 +1311,7 @@ export default function CampoPage() {
                   type="submit"
                   className="px-4 py-2 bg-sky-500 hover:bg-sky-400 text-black font-extrabold rounded-lg shadow"
                 >
-                  Dar de Alta y Relevar Ahora
+                  Agregar a {selectedZona?.codigo || 'Zona'}
                 </button>
               </div>
             </form>
@@ -1114,10 +1323,14 @@ export default function CampoPage() {
       <AjustarZonaCampoModal
         isOpen={isAjustarZonaModalOpen}
         onClose={() => setIsAjustarZonaModalOpen(false)}
-        zona={zonas.find(z => z.id === selectedElemento?.zona_id) || zonas[0] || null}
+        zona={selectedZona || zonas[0] || null}
         onZonaUpdated={async () => {
           const fresh = await db.zonas.toArray();
           setZonas(fresh);
+          if (selectedZona) {
+            const updated = fresh.find(z => z.id === selectedZona.id);
+            if (updated) setSelectedZona(updated);
+          }
         }}
       />
     </div>

@@ -51,6 +51,19 @@ export interface Area {
   descripcion?: string;
 }
 
+export interface PlanoGeoreferencia {
+  anchorLat: number;
+  anchorLng: number;
+  anchorPixelX: number;
+  anchorPixelY: number;
+  metersPerPixel: number;
+  rotationDeg: number;
+  satelliteOpacity?: number;
+  invertCadLines?: boolean;
+  showSatelliteLayer?: boolean;
+  updated_at?: string;
+}
+
 export interface Plano {
   id: string;
   area_id: string;
@@ -62,6 +75,7 @@ export interface Plano {
   rotacion?: number; // 0, 90, 180, 270 grados
   tipo_plano?: 'layout_general' | 'area_detalle' | 'elevacion_isometrico';
   dimensiones_viewbox: { width: number; height: number };
+  georeferencia?: PlanoGeoreferencia;
   version: number;
   activo: boolean;
 }
@@ -76,6 +90,7 @@ export interface ZonaInspeccion {
   disciplinas_involucradas?: DisciplinaZona[];
   estado_salud_apriori?: 'bueno' | 'regular' | 'malo' | 'critico';
   superficie_estimada_m2?: number;
+  coordenadas_gps_override?: { lat: number; lng: number };
   poligono_svg: {
     puntos: { x: number; y: number }[];
   };
@@ -131,12 +146,15 @@ export interface FotoInspeccionLocal {
   thumbnail_data_url: string;
   original_webp_blob?: Blob;
   peso_bytes: number;
+  comentario?: string;
   anotaciones_canvas: VectorAnnotation[];
 }
 
 export interface Inspeccion {
   id: string;
   elemento_id: string;
+  zona_id?: string;
+  zona_codigo?: string;
   inspector_id?: string;
   inspector_nombre?: string;
   fecha_inspeccion: string;

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { 
   ZoomIn, 
@@ -20,10 +20,26 @@ import {
   Tag,
   MousePointer,
   Compass,
-  Navigation
+  Globe,
+  Sliders,
+  Ruler,
+  Save,
+  Eye,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight
 } from 'lucide-react';
-import { Plano, ZonaInspeccion, Elemento, EstadoSemaforo, HitoGeografico } from '../../types';
+import { Plano, ZonaInspeccion, Elemento, EstadoSemaforo, HitoGeografico, PlanoGeoreferencia } from '../../types';
 import { convertPdfPageToImage, rotateImageDataUrl } from '../../lib/pdfRenderer';
+import { 
+  getOrInitGeoreferencia, 
+  pixelToLatLng, 
+  getSatelliteTilesForPlan, 
+  calibrateFromTwoPoints,
+  calibrateFromDistance,
+  getMetersPerDegree
+} from '../../lib/georeferenceEngine';
 import { db } from '../../lib/db';
 
 interface InteractivePlantMapProps {
@@ -72,7 +88,28 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
   const [showZonasLayer, setShowZonasLayer] = useState(true);
   const [showPinsLayer, setShowPinsLayer] = useState(true);
   const [showHitosLayer, setShowHitosLayer] = useState(true);
-  const [useShortTags, setUseShortTags] = useState(true);
+
+  // Por defecto: 'none' (Solo líneas delimitadas limpias; detalles en el panel al seleccionar)
+  const [labelMode, setLabelMode] = useState<'none' | 'short' | 'full'>('none');
+  const [hoveredZonaId, setHoveredZonaId] = useState<string | null>(null);
+
+  // Tracking del nivel de zoom en tiempo real para escalado inverso (1 / currentZoom)
+  const [currentZoom, setCurrentZoom] = useState<number>(1);
+  const [cursorGps, setCursorGps] = useState<{ lat: number; lng: number; x: number; y: number } | null>(null);
+
+  // Capa Satelital Maps y Calibrador Visual ("Papel Calco")
+  const [showSatellite, setShowSatellite] = useState<boolean>(false);
+  const [tileSource, setTileSource] = useState<'esri' | 'osm'>('esri');
+  const [isCalibratingMaps, setIsCalibratingMaps] = useState<boolean>(false);
+  const [cadOpacity, setCadOpacity] = useState<number>(0.75);
+  const [invertCadLines, setInvertCadLines] = useState<boolean>(false);
+  const [geoCal, setGeoCal] = useState<PlanoGeoreferencia>(() => getOrInitGeoreferencia(plano, hitos));
+
+  // Regla de calibración por distancia conocida en metros entre 2 puntos (A y B)
+  const [isMeasuringScale, setIsMeasuringScale] = useState<boolean>(false);
+  const [scalePoints, setScalePoints] = useState<{ x: number; y: number }[]>([]);
+  const [knownMetersInput, setKnownMetersInput] = useState<string>('100');
+
   const [isZenMode, setIsZenMode] = useState(false);
   const [resolvedImageUrl, setResolvedImageUrl] = useState<string | null>(plano?.archivo_data_url || plano?.archivo_original_url || null);
   const [isConvertingPdf, setIsConvertingPdf] = useState(false);
@@ -84,6 +121,15 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
 
   // Estado para el trazado libre de nuevos polígonos punto a punto
   const [drawingPoints, setDrawingPoints] = useState<{ x: number; y: number }[]>([]);
+
+  // Sincronizar georreferencia cuando cambia el plano o los hitos
+  useEffect(() => {
+    const initial = getOrInitGeoreferencia(plano, hitos);
+    setGeoCal(initial);
+    if (plano?.georeferencia?.invertCadLines !== undefined) {
+      setInvertCadLines(plano.georeferencia.invertCadLines);
+    }
+  }, [plano?.id, plano?.georeferencia, hitos.length]);
 
   // Sincronizar vértices locales cuando cambia la selección de zona
   const selectedZona = zonas.find(z => z.id === selectedZonaId);
@@ -133,6 +179,75 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     processPlanImage();
     return () => { isMounted = false; };
   }, [plano?.id, plano?.archivo_data_url, plano?.archivo_original_url]);
+
+  // Guardar calibración satelital en el Plano (IndexedDB)
+  const handleSaveCalibration = async () => {
+    if (!plano) return;
+    const updatedGeo: PlanoGeoreferencia = {
+      ...geoCal,
+      invertCadLines,
+      updated_at: new Date().toISOString()
+    };
+    const updatedPlano: Plano = {
+      ...plano,
+      georeferencia: updatedGeo
+    };
+    await db.planos.put(updatedPlano);
+    if (onPlanUpdated) onPlanUpdated(updatedPlano);
+    setIsCalibratingMaps(false);
+  };
+
+  // Desplazar la capa satelital en metros (Norte/Sur/Este/Oeste) para encajar con el Lay Out
+  const handleNudgeMeters = (dNorthM: number, dEastM: number) => {
+    const { metersPerDegLat, metersPerDegLng } = getMetersPerDegree(geoCal.anchorLat);
+    setGeoCal(prev => ({
+      ...prev,
+      anchorLat: Number((prev.anchorLat + dNorthM / metersPerDegLat).toFixed(6)),
+      anchorLng: Number((prev.anchorLng + dEastM / metersPerDegLng).toFixed(6))
+    }));
+  };
+
+  // Auto-centrar o auto-calibrar desde los Hitos GPS existentes en el plano
+  const handleAutoSyncFromHitos = () => {
+    const validHitos = hitos.filter(h => h.coordenadas_plano && !isNaN(h.lat) && !isNaN(h.lng));
+    if (validHitos.length >= 2) {
+      const cal = calibrateFromTwoPoints(
+        {
+          x: validHitos[0].coordenadas_plano!.x,
+          y: validHitos[0].coordenadas_plano!.y,
+          lat: validHitos[0].lat,
+          lng: validHitos[0].lng
+        },
+        {
+          x: validHitos[1].coordenadas_plano!.x,
+          y: validHitos[1].coordenadas_plano!.y,
+          lat: validHitos[1].lat,
+          lng: validHitos[1].lng
+        }
+      );
+      setGeoCal(cal);
+    } else if (validHitos.length === 1) {
+      const h = validHitos[0];
+      setGeoCal(prev => ({
+        ...prev,
+        anchorLat: h.lat,
+        anchorLng: h.lng,
+        anchorPixelX: h.coordenadas_plano!.x,
+        anchorPixelY: h.coordenadas_plano!.y
+      }));
+    }
+  };
+
+  // Aplicar escala a partir de los 2 puntos medidos con la regla
+  const handleApplyMeasuredDistance = () => {
+    if (scalePoints.length !== 2) return;
+    const distM = parseFloat(knownMetersInput);
+    if (isNaN(distM) || distM <= 0) return;
+    const updated = calibrateFromDistance(geoCal, scalePoints[0], scalePoints[1], distM);
+    setGeoCal(updated);
+    setIsMeasuringScale(false);
+    setScalePoints([]);
+  };
 
   // Rotar plano en incrementos de 90° horario o antihorario
   const handleRotatePlan = async (clockwise: boolean = true) => {
@@ -205,6 +320,11 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     const coords = getSvgCoordinates(e);
     if (!coords) return;
 
+    if (isMeasuringScale) {
+      setScalePoints(prev => (prev.length >= 2 ? [coords] : [...prev, coords]));
+      return;
+    }
+
     if (activeMode === 'add_pin' || activeMode === 'add_hito') {
       if (onMapClick) onMapClick(coords);
       return;
@@ -222,26 +342,27 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     setDrawingPoints([]);
   };
 
-  // Cancelar trazado
   const handleCancelDrawing = () => {
     setDrawingPoints([]);
   };
 
-  // Deshacer último vértice
   const handleUndoDrawingPoint = () => {
     setDrawingPoints(prev => prev.slice(0, prev.length - 1));
   };
 
-  // Arrastre de vértices de polígono en modo edición
   const handleVertexMouseDown = (e: React.MouseEvent, idx: number) => {
     e.stopPropagation();
     setDraggingVertexIdx(idx);
   };
 
   const handleSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (draggingVertexIdx === null) return;
     const coords = getSvgCoordinates(e);
-    if (!coords) return;
+    if (coords) {
+      const gps = pixelToLatLng(coords.x, coords.y, geoCal);
+      setCursorGps({ ...gps, x: coords.x, y: coords.y });
+    }
+
+    if (draggingVertexIdx === null || !coords) return;
 
     setLocalPoints(prev => {
       const updated = [...prev];
@@ -257,7 +378,6 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     setDraggingVertexIdx(null);
   };
 
-  // Insertar un nuevo vértice
   const handleInsertVertex = (afterIdx: number, midX: number, midY: number) => {
     if (!selectedZonaId || !onUpdateZonePolygon) return;
     const updated = [...localPoints];
@@ -266,7 +386,6 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     onUpdateZonePolygon(selectedZonaId, updated);
   };
 
-  // Eliminar un vértice
   const handleVertexContextMenu = (e: React.MouseEvent, idx: number) => {
     e.preventDefault();
     e.stopPropagation();
@@ -277,7 +396,6 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     onUpdateZonePolygon(selectedZonaId, updated);
   };
 
-  // Estado del semáforo para pines
   const getSemaforoColor = (estado: EstadoSemaforo) => {
     switch (estado) {
       case 'rojo': return { fill: '#ef4444', stroke: '#991b1b', pulse: true };
@@ -286,6 +404,24 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
       case 'verde': return { fill: '#22c55e', stroke: '#15803d', pulse: false };
       default: return { fill: '#64748b', stroke: '#334155', pulse: false };
     }
+  };
+
+  const vbWidth = plano?.dimensiones_viewbox?.width || 2000;
+  const vbHeight = plano?.dimensiones_viewbox?.height || 1200;
+
+  // Factor base de relación ViewBox / pantalla (~1000px) e inverso del zoom actual
+  // Garantiza que puntos GPS, pines y trazos se vean del mismo tamaño limpio en pantalla a zoom 1x o 30x
+  const baseScreenRatio = Math.max(1, vbWidth / 1150);
+  const invZoom = baseScreenRatio / Math.max(0.5, currentZoom);
+
+  // Grilla de tiles satelitales sincronizada con la georreferencia
+  const satelliteOverlay = useMemo(() => {
+    if (!showSatellite) return null;
+    return getSatelliteTilesForPlan(vbWidth, vbHeight, geoCal, tileSource);
+  }, [showSatellite, vbWidth, vbHeight, geoCal, tileSource]);
+
+  const cycleLabelMode = () => {
+    setLabelMode(prev => (prev === 'none' ? 'short' : prev === 'short' ? 'full' : 'none'));
   };
 
   if (!plano) {
@@ -310,10 +446,6 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     );
   }
 
-  const vbWidth = plano.dimensiones_viewbox?.width || 2000;
-  const vbHeight = plano.dimensiones_viewbox?.height || 1200;
-  const scaleFactor = Math.min(1.4, Math.max(0.7, vbWidth / 4000));
-
   return (
     <div className={`relative w-full h-full bg-[#070b13] overflow-hidden select-none flex flex-col ${isZenMode ? 'fixed inset-0 z-50 bg-[#070b13]' : ''}`}>
       {/* Loading Overlay */}
@@ -324,9 +456,49 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         </div>
       )}
 
+      {/* Indicador de Regla de Calibración por Distancia */}
+      {isMeasuringScale && (
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-30 flex flex-wrap items-center gap-2 bg-amber-950/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-amber-400 shadow-2xl text-xs text-white">
+          <Ruler className="w-4 h-4 text-amber-400" />
+          <span className="font-bold">
+            {scalePoints.length === 0
+              ? '1º Haz clic en el Punto A del plano'
+              : scalePoints.length === 1
+              ? '2º Haz clic en el Punto B del plano'
+              : 'Ingresa la distancia real entre A y B:'}
+          </span>
+          {scalePoints.length === 2 && (
+            <div className="flex items-center space-x-1.5">
+              <input
+                type="number"
+                step="any"
+                value={knownMetersInput}
+                onChange={(e) => setKnownMetersInput(e.target.value)}
+                className="w-20 bg-slate-950 border border-amber-400 rounded px-2 py-0.5 text-amber-300 font-mono font-bold text-xs"
+              />
+              <span className="text-amber-300 font-mono">metros</span>
+              <button
+                type="button"
+                onClick={handleApplyMeasuredDistance}
+                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg"
+              >
+                Aplicar Escala
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => { setIsMeasuringScale(false); setScalePoints([]); }}
+            className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full text-[10px]"
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
+
       {/* Indicador de Modo Activo arriba-centro */}
       {activeMode === 'add_hito' && (
-        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-2 bg-emerald-950/95 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-emerald-500 shadow-xl text-xs text-white animate-in fade-in slide-in-from-top-1">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-2 bg-emerald-950/95 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-emerald-500 shadow-xl text-xs text-white">
           <Compass className="w-4 h-4 text-emerald-400 animate-spin" />
           <span className="font-bold">Haz clic en el punto exacto del plano para fijar el Hito Geográfico (GPS)</span>
           <button
@@ -390,9 +562,9 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
       )}
 
       {/* Barra de Edición de Polígono de Zona Seleccionada */}
-      {selectedZona && activeMode === 'inspect' && (
+      {selectedZona && activeMode === 'inspect' && !isMeasuringScale && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center space-x-2 bg-slate-900/90 backdrop-blur-md px-3 py-1 rounded-full border border-slate-700 shadow-lg text-[11px] text-slate-300">
-          <span className="truncate max-w-[200px] sm:max-w-xs font-semibold">
+          <span className="truncate max-w-[180px] sm:max-w-xs font-semibold">
             {selectedZona.codigo}: <strong className="text-white">{selectedZona.nombre}</strong>
           </span>
           {isEditingPolygon ? (
@@ -419,12 +591,12 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         </div>
       )}
 
-      {/* Controles de Capas arriba-izquierda */}
-      <div className="absolute top-2 left-2 z-20 flex items-center space-x-1 sm:space-x-1.5 bg-slate-900/90 backdrop-blur-md p-1 rounded-lg border border-slate-700/80 shadow-lg text-xs">
+      {/* Controles de Capas y Capa Satelital arriba-izquierda */}
+      <div className="absolute top-2 left-2 z-20 flex flex-wrap items-center gap-1 bg-slate-900/90 backdrop-blur-md p-1 rounded-lg border border-slate-700/80 shadow-lg text-xs">
         <button
           onClick={() => setShowZonasLayer(!showZonasLayer)}
           className={`flex items-center space-x-1 px-2 py-1 rounded ${showZonasLayer ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40' : 'text-slate-400 hover:bg-slate-800'}`}
-          title="Alternar visibilidad de Zonas"
+          title="Alternar visibilidad de líneas de Zonas"
         >
           <Layers className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="hidden sm:inline">Zonas</span>
@@ -445,20 +617,69 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         <button
           onClick={() => setShowHitosLayer(!showHitosLayer)}
           className={`flex items-center space-x-1 px-2 py-1 rounded ${showHitosLayer ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'text-slate-400 hover:bg-slate-800'}`}
-          title="Alternar visibilidad de Hitos Geográficos (GPS)"
+          title="Alternar visibilidad de Puntos GPS"
         >
           <Compass className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="hidden sm:inline">GPS</span>
           <span className="font-mono text-[10px] font-bold">({hitos.length})</span>
         </button>
 
-        {/* Toggle para etiquetas Cortas / Completas */}
+        {/* Botón Capa Satélite / Maps Superpuesta */}
         <button
-          onClick={() => setUseShortTags(!useShortTags)}
-          className={`p-1.5 rounded transition ${useShortTags ? 'text-sky-300 hover:bg-slate-800' : 'bg-sky-500/20 text-sky-400 border border-sky-500/40'}`}
-          title={useShortTags ? "Etiquetas compactas activas (clic para ver nombres completos)" : "Nombres completos activos (clic para ver solo ID corto)"}
+          onClick={() => {
+            const next = !showSatellite;
+            setShowSatellite(next);
+            if (next && !plano.georeferencia) {
+              setIsCalibratingMaps(true);
+            }
+          }}
+          className={`flex items-center space-x-1 px-2 py-1 rounded font-bold transition ${
+            showSatellite 
+              ? 'bg-emerald-600 text-white shadow' 
+              : 'text-emerald-400 hover:bg-slate-800 border border-emerald-500/30'
+          }`}
+          title="Activar Capa de Mapa Satelital debajo del Lay Out"
+        >
+          <Globe className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="hidden md:inline">Capa Maps</span>
+        </button>
+
+        {/* Botón Abrir Calibrador Manual de Capa Maps */}
+        {showSatellite && (
+          <button
+            onClick={() => setIsCalibratingMaps(!isCalibratingMaps)}
+            className={`flex items-center space-x-1 px-2 py-1 rounded font-bold transition ${
+              isCalibratingMaps
+                ? 'bg-amber-500 text-black'
+                : 'bg-slate-800 text-amber-300 hover:bg-slate-700'
+            }`}
+            title="Ajustar encaje del Lay Out sobre el Mapa Satelital (Opacidad, Escala, Giro y Posición)"
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">Ajustar Maps</span>
+          </button>
+        )}
+
+        {/* Toggle para Etiquetas de Zona: Solo Líneas (none) -> Código Corto (short) -> Completo (full) */}
+        <button
+          onClick={cycleLabelMode}
+          className={`flex items-center space-x-1 px-2 py-1 rounded transition ${
+            labelMode === 'none'
+              ? 'text-slate-400 hover:bg-slate-800'
+              : 'bg-sky-500/20 text-sky-400 border border-sky-500/40'
+          }`}
+          title={
+            labelMode === 'none'
+              ? "Modo actual: Solo Líneas (clic para mostrar códigos cortos)"
+              : labelMode === 'short'
+              ? "Modo actual: Códigos cortos (clic para nombres completos)"
+              : "Modo actual: Nombres completos (clic para volver a Solo Líneas)"
+          }
         >
           <Tag className="w-3.5 h-3.5" />
+          <span className="hidden lg:inline text-[10px] font-mono">
+            {labelMode === 'none' ? 'Solo Líneas' : labelMode === 'short' ? 'ID Corto' : 'Texto'}
+          </span>
         </button>
 
         {/* Botón Zen / Pantalla Completa */}
@@ -471,7 +692,203 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         </button>
       </div>
 
-      {/* Visor Pan & Zoom */}
+      {/* PANEL FLOTANTE DE CALIBRACIÓN VISUAL MAPS ("PAPEL CALCO SATELITAL") */}
+      {showSatellite && isCalibratingMaps && (
+        <div className="absolute top-14 left-2 z-30 w-80 bg-slate-900/95 backdrop-blur-md border border-emerald-500/70 rounded-xl shadow-2xl p-3.5 space-y-3 text-xs text-slate-200">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <div className="flex items-center space-x-1.5 font-bold text-emerald-400">
+              <Globe className="w-4 h-4" />
+              <span>Encaje Manual Lay Out / Maps</span>
+            </div>
+            <div className="flex items-center space-x-1">
+              <button
+                type="button"
+                onClick={() => setTileSource(tileSource === 'esri' ? 'osm' : 'esri')}
+                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-[10px] font-mono text-sky-300 border border-slate-700"
+                title="Cambiar entre Foto Satelital y Mapa Callejero OSM"
+              >
+                {tileSource === 'esri' ? '🛰️ Satélite' : '🗺️ Mapa OSM'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCalibratingMaps(false)}
+                className="px-1.5 py-0.5 text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          {/* 1. Opacidad y Contraste del Plano */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-slate-400">Transparencia del Plano CAD:</span>
+              <span className="font-mono font-bold text-sky-400">{Math.round(cadOpacity * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              min="0.15"
+              max="1"
+              step="0.05"
+              value={cadOpacity}
+              onChange={(e) => setCadOpacity(parseFloat(e.target.value))}
+              className="w-full accent-sky-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+            />
+            <label className="flex items-center space-x-2 pt-1 cursor-pointer text-[11px] text-slate-300">
+              <input
+                type="checkbox"
+                checked={invertCadLines}
+                onChange={(e) => setInvertCadLines(e.target.checked)}
+                className="rounded accent-emerald-500"
+              />
+              <span>Invertir trazos (Líneas claras sobre Satélite)</span>
+            </label>
+          </div>
+
+          {/* 2. Desplazamiento Manual (N/S/E/O) y Coordenada Ancla */}
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase text-slate-400">Posición Satélite (Mover Mapa):</span>
+              {hitos.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleAutoSyncFromHitos}
+                  className="text-[10px] px-2 py-0.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700 rounded font-bold"
+                  title="Alinear automáticamente usando los Hitos GPS cargados en el plano"
+                >
+                  ⚡ Anclar a Hito {hitos[0].codigo}
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <div className="grid grid-cols-3 gap-1 w-24 flex-shrink-0">
+                <div />
+                <button
+                  type="button"
+                  onClick={() => handleNudgeMeters(-8, 0)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
+                  title="Mover plano al Norte"
+                >
+                  <ArrowUp className="w-3.5 h-3.5" />
+                </button>
+                <div />
+                <button
+                  type="button"
+                  onClick={() => handleNudgeMeters(0, -8)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
+                  title="Mover plano al Oeste"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNudgeMeters(8, 0)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
+                  title="Mover plano al Sur"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNudgeMeters(0, 8)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
+                  title="Mover plano al Este"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="flex-1 space-y-1">
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={geoCal.anchorLat}
+                  onChange={(e) => setGeoCal(prev => ({ ...prev, anchorLat: parseFloat(e.target.value) || 0 }))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-white"
+                  placeholder="Latitud"
+                />
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={geoCal.anchorLng}
+                  onChange={(e) => setGeoCal(prev => ({ ...prev, anchorLng: parseFloat(e.target.value) || 0 }))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-white"
+                  placeholder="Longitud"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Escala (Metros por Píxel) y Regla de Distancia Conocida */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-slate-400">Escala (`m / píxel`):</span>
+              <span className="font-mono font-bold text-amber-400">
+                {geoCal.metersPerPixel.toFixed(4)} m/px ({Math.round(vbWidth * geoCal.metersPerPixel)}m ancho)
+              </span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <input
+                type="range"
+                min="0.01"
+                max="0.35"
+                step="0.001"
+                value={geoCal.metersPerPixel}
+                onChange={(e) => setGeoCal(prev => ({ ...prev, metersPerPixel: parseFloat(e.target.value) }))}
+                className="flex-1 accent-amber-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+              />
+              <button
+                type="button"
+                onClick={() => { setIsMeasuringScale(true); setScalePoints([]); }}
+                className="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded text-[10px] font-bold flex items-center space-x-1"
+                title="Medir 2 puntos en el plano e ingresar su distancia en metros"
+              >
+                <Ruler className="w-3 h-3" />
+                <span>Medir</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 4. Rotación respecto al Norte */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-slate-400">Rotación respecto al Norte:</span>
+              <span className="font-mono font-bold text-emerald-400">{geoCal.rotationDeg}°</span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <input
+                type="range"
+                min="-180"
+                max="180"
+                step="0.5"
+                value={geoCal.rotationDeg}
+                onChange={(e) => setGeoCal(prev => ({ ...prev, rotationDeg: parseFloat(e.target.value) }))}
+                className="flex-1 accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+              />
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: 0 }))}
+                className="px-1.5 py-0.5 bg-slate-800 text-slate-400 hover:text-white rounded text-[10px] font-mono"
+              >
+                0°
+              </button>
+            </div>
+          </div>
+
+          {/* Guardar Calibración */}
+          <button
+            type="button"
+            onClick={handleSaveCalibration}
+            className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg shadow-lg flex items-center justify-center space-x-1.5 transition"
+          >
+            <Save className="w-3.5 h-3.5" />
+            <span>Guardar Calibración en Plano</span>
+          </button>
+        </div>
+      )}
+
+      {/* Visor Pan & Zoom con Tracking de Escala */}
       <TransformWrapper
         initialScale={1}
         minScale={0.05}
@@ -481,7 +898,13 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         wheel={{ step: 0.25 }}
         pinch={{ step: 5 }}
         doubleClick={{ step: 2 }}
-        disabled={activeMode !== 'inspect' || (isEditingPolygon && draggingVertexIdx !== null) || drawingPoints.length > 0}
+        onTransformed={(_, state) => setCurrentZoom(state.scale)}
+        disabled={
+          activeMode !== 'inspect' ||
+          isMeasuringScale ||
+          (isEditingPolygon && draggingVertexIdx !== null) ||
+          drawingPoints.length > 0
+        }
       >
         {({ zoomIn, zoomOut, resetTransform }) => (
           <>
@@ -554,24 +977,53 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                 onMouseMove={handleSvgMouseMove}
                 onMouseUp={handleSvgMouseUp}
               >
-                {/* Cuadrícula técnica sutil de fondo */}
                 <defs>
                   <pattern id="grid-large" width="100" height="100" patternUnits="userSpaceOnUse">
                     <path d="M 100 0 L 0 0 0 100" fill="none" stroke="#1e293b" strokeWidth="0.8" opacity="0.3" />
                   </pattern>
                   <filter id="pin-shadow" x="-50%" y="-50%" width="200%" height="200%">
-                    <feDropShadow dx="0" dy="4" stdDeviation="3" floodColor="#000000" floodOpacity="0.6" />
+                    <feDropShadow dx="0" dy="2" stdDeviation="2" floodColor="#000000" floodOpacity="0.65" />
                   </filter>
-                  <filter id="neon-glow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feGaussianBlur stdDeviation="3" result="blur" />
-                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                  {/* Filtro para invertir líneas negras del plano sobre foto satelital */}
+                  <filter id="invert-cad">
+                    <feColorMatrix
+                      type="matrix"
+                      values="-1 0 0 0 1
+                               0 -1 0 0 1
+                               0 0 -1 0 1
+                               0 0 0 1 0"
+                    />
                   </filter>
                 </defs>
                 <rect width="100%" height="100%" fill="url(#grid-large)" />
 
+                {/* CAPA 0: MAPA SATELITAL / OSM SUPERPUESTO Y CALIBRADO */}
+                {showSatellite && satelliteOverlay && (
+                  <g
+                    transform={`rotate(${satelliteOverlay.rotationDeg} ${satelliteOverlay.anchorX} ${satelliteOverlay.anchorY})`}
+                    opacity={0.92}
+                  >
+                    {satelliteOverlay.tiles.map(t => (
+                      <image
+                        key={t.key}
+                        href={t.url}
+                        x={t.x}
+                        y={t.y}
+                        width={t.width}
+                        height={t.height}
+                        preserveAspectRatio="none"
+                      />
+                    ))}
+                  </g>
+                )}
+
                 {/* RENDERIZADO DEL PLANO CARGADO (Vectorial Puro SVG o Raster) */}
                 {plano.svg_content ? (
-                  <g dangerouslySetInnerHTML={{ __html: plano.svg_content }} />
+                  <g
+                    dangerouslySetInnerHTML={{ __html: plano.svg_content }}
+                    opacity={showSatellite ? cadOpacity : 1}
+                    filter={showSatellite && invertCadLines ? 'url(#invert-cad)' : undefined}
+                  />
                 ) : (
                   (resolvedImageUrl || plano.archivo_data_url || plano.archivo_original_url) && (
                     <image
@@ -581,121 +1033,137 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       width={vbWidth}
                       height={vbHeight}
                       preserveAspectRatio="xMidYMid meet"
-                      opacity="0.95"
+                      opacity={showSatellite ? cadOpacity : 0.96}
+                      filter={showSatellite && invertCadLines ? 'url(#invert-cad)' : undefined}
+                      style={showSatellite && !invertCadLines ? { mixBlendMode: 'multiply' } : undefined}
                     />
                   )
                 )}
 
-                {!plano.archivo_data_url && !plano.archivo_original_url && !plano.svg_content && (
-                  <g stroke="#475569" strokeWidth="2" fill="none">
-                    <rect x="100" y="100" width={vbWidth - 200} height={vbHeight - 200} fill="#0f172a" stroke="#38bdf8" strokeWidth="2" rx="8" />
-                    <text x="140" y="160" fill="#94a3b8" fontSize="24" fontFamily="monospace" fontWeight="bold">
-                      {plano.titulo}
-                    </text>
-                    <text x="140" y="200" fill="#64748b" fontSize="16" fontFamily="monospace">
-                      Usa el dock inferior para colocar pines, zonas o hitos GPS en este plano.
-                    </text>
+                {/* Línea de Regla cuando se está midiendo distancia de calibración */}
+                {isMeasuringScale && scalePoints.length > 0 && (
+                  <g>
+                    {scalePoints.length === 2 && (
+                      <line
+                        x1={scalePoints[0].x}
+                        y1={scalePoints[0].y}
+                        x2={scalePoints[1].x}
+                        y2={scalePoints[1].y}
+                        stroke="#f59e0b"
+                        strokeWidth={2.5 * invZoom}
+                        strokeDasharray={`${6 * invZoom},${4 * invZoom}`}
+                      />
+                    )}
+                    {scalePoints.map((pt, i) => (
+                      <g key={i} transform={`translate(${pt.x}, ${pt.y}) scale(${invZoom})`}>
+                        <circle r={6} fill="#f59e0b" stroke="#000" strokeWidth={1.5} />
+                        <text y={-10} fill="#fde68a" fontSize={11} fontWeight="bold" textAnchor="middle">
+                          {i === 0 ? 'A' : 'B'}
+                        </text>
+                      </g>
+                    ))}
                   </g>
                 )}
 
-                {/* CAPA 1: Polígonos de Zonas de Inspección */}
+                {/* CAPA 1: Polígonos de Zonas de Inspección (RESPONSIVOS AL ZOOM + MODO SOLO LÍNEAS) */}
                 {showZonasLayer && zonas.map((zona) => {
                   const isSelected = selectedZonaId === zona.id;
+                  const isHovered = hoveredZonaId === zona.id;
                   const pts = (isSelected && localPoints.length >= 3) ? localPoints : (zona.poligono_svg?.puntos || []);
                   if (!pts || pts.length === 0) return null;
                   const pointsStr = pts.map(p => `${p.x},${p.y}`).join(' ');
 
                   const minX = Math.min(...pts.map(p => p.x));
                   const minY = Math.min(...pts.map(p => p.y));
-                  const tagScale = Math.min(1.3, Math.max(0.9, vbWidth / 7000));
-                  
-                  const tagText = useShortTags 
-                    ? (zona.codigo || 'Z').trim().toUpperCase()
-                    : `${(zona.codigo || 'Z').trim().toUpperCase()} - ${zona.nombre}`;
-                  
-                  const badgeW = Math.max(32, tagText.length * 7.2 + 12) * tagScale;
-                  const badgeH = 17 * tagScale;
-                  const badgeX = minX + 2;
-                  const badgeY = minY - badgeH > 4 ? minY - badgeH - 2 : minY + 3;
+
+                  // Solo mostramos badge de texto si labelMode !== 'none' O si el usuario pasa el cursor / selecciona la zona
+                  const showBadge = labelMode !== 'none' || isSelected || isHovered;
+                  const tagText = labelMode === 'full'
+                    ? `${(zona.codigo || 'Z').trim().toUpperCase()} · ${zona.nombre}`
+                    : (zona.codigo || 'Z').trim().toUpperCase();
+                  const badgeW = Math.max(34, tagText.length * 6.8 + 14);
+                  const badgeH = 18;
 
                   return (
-                    <g key={zona.id} className="cursor-pointer" onClick={(e) => {
-                      if (activeMode === 'inspect') {
-                        e.stopPropagation();
-                        onSelectZona(zona);
-                      }
-                    }}>
+                    <g
+                      key={zona.id}
+                      className="cursor-pointer"
+                      onMouseEnter={() => setHoveredZonaId(zona.id)}
+                      onMouseLeave={() => setHoveredZonaId(prev => (prev === zona.id ? null : prev))}
+                      onClick={(e) => {
+                        if (activeMode === 'inspect' && !isMeasuringScale) {
+                          e.stopPropagation();
+                          onSelectZona(zona);
+                        }
+                      }}
+                    >
                       <polygon
                         points={pointsStr}
-                        fill={isSelected ? 'rgba(14, 165, 233, 0.22)' : 'rgba(56, 189, 248, 0.06)'}
-                        stroke={isSelected ? '#38bdf8' : '#0284c7'}
-                        strokeWidth={isSelected ? 3 * scaleFactor : 1.8 * scaleFactor}
-                        strokeDasharray={isSelected ? 'none' : `${8 * scaleFactor},${6 * scaleFactor}`}
-                        className="transition-all hover:fill-sky-500/20"
+                        fill={
+                          isSelected
+                            ? 'rgba(14, 165, 233, 0.18)'
+                            : isHovered
+                            ? 'rgba(56, 189, 248, 0.12)'
+                            : 'rgba(56, 189, 248, 0.03)'
+                        }
+                        stroke={isSelected ? '#38bdf8' : isHovered ? '#0ea5e9' : '#0284c7'}
+                        strokeWidth={(isSelected ? 2.4 : 1.5) * invZoom}
+                        strokeDasharray={isSelected ? 'none' : `${7 * invZoom},${5 * invZoom}`}
+                        className="transition-colors"
                       />
-                      {/* Badge / Indicación mínima que no invade el interior del equipo */}
-                      <g className="transition-all hover:scale-105">
-                        <rect
-                          x={badgeX}
-                          y={badgeY}
-                          width={badgeW}
-                          height={badgeH}
-                          rx={3 * tagScale}
-                          fill={isSelected ? '#0284c7' : 'rgba(9, 13, 22, 0.88)'}
-                          stroke={isSelected ? '#38bdf8' : '#0284c7'}
-                          strokeWidth={1.2 * tagScale}
-                        />
-                        <text
-                          x={badgeX + badgeW / 2}
-                          y={badgeY + badgeH / 2}
-                          fill={isSelected ? '#ffffff' : '#38bdf8'}
-                          fontSize={9.5 * tagScale}
-                          fontFamily="monospace"
-                          fontWeight="bold"
-                          textAnchor="middle"
-                          dominantBaseline="central"
-                          pointerEvents="none"
-                        >
-                          {tagText}
-                        </text>
-                      </g>
 
-                      {/* VÉRTICES INTERACTIVOS DE AJUSTE */}
+                      {/* Badge Responsivo con Escala Inversa (1 / Zoom): jamás se agranda al hacer zoom */}
+                      {showBadge && (
+                        <g
+                          transform={`translate(${minX}, ${minY}) scale(${invZoom})`}
+                          className="pointer-events-none"
+                        >
+                          <rect
+                            x={0}
+                            y={-badgeH - 3}
+                            width={badgeW}
+                            height={badgeH}
+                            rx={4}
+                            fill={isSelected ? '#0284c7' : 'rgba(9, 13, 22, 0.90)'}
+                            stroke={isSelected ? '#7dd3fc' : '#0284c7'}
+                            strokeWidth={1.2}
+                          />
+                          <text
+                            x={badgeW / 2}
+                            y={-badgeH / 2 - 3}
+                            fill={isSelected ? '#ffffff' : '#38bdf8'}
+                            fontSize={10}
+                            fontFamily="monospace"
+                            fontWeight="bold"
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                          >
+                            {tagText}
+                          </text>
+                        </g>
+                      )}
+
+                      {/* VÉRTICES INTERACTIVOS DE AJUSTE (ESCALADOS CON 1/ZOOM) */}
                       {isSelected && isEditingPolygon && pts.map((p, idx) => (
                         <g
                           key={`vertex-${zona.id}-${idx}`}
+                          transform={`translate(${p.x}, ${p.y}) scale(${invZoom})`}
                           className="cursor-move select-none"
                           onMouseDown={(e) => handleVertexMouseDown(e, idx)}
                           onContextMenu={(e) => handleVertexContextMenu(e, idx)}
                         >
-                          <circle cx={p.x} cy={p.y} r={18 * scaleFactor} fill="transparent" />
+                          <circle r={14} fill="transparent" />
                           <circle
-                            cx={p.x}
-                            cy={p.y}
-                            r={(draggingVertexIdx === idx ? 13 : 9) * scaleFactor}
+                            r={draggingVertexIdx === idx ? 9 : 6.5}
                             fill={draggingVertexIdx === idx ? '#f59e0b' : '#0284c7'}
                             stroke="#ffffff"
-                            strokeWidth={2.5 * scaleFactor}
-                            className="transition-all hover:scale-125 hover:fill-amber-400"
-                          />
-                          <circle cx={p.x} cy={p.y} r={3 * scaleFactor} fill="#0f172a" pointerEvents="none" />
-                          <rect
-                            x={p.x - 14 * scaleFactor}
-                            y={p.y - 25 * scaleFactor}
-                            width={28 * scaleFactor}
-                            height={15 * scaleFactor}
-                            rx={3 * scaleFactor}
-                            fill="#090d16"
-                            stroke="#38bdf8"
-                            strokeWidth={0.8 * scaleFactor}
-                            pointerEvents="none"
+                            strokeWidth={2}
                           />
                           <text
-                            x={p.x}
-                            y={p.y - 14 * scaleFactor}
+                            y={-10}
                             textAnchor="middle"
                             fill="#38bdf8"
-                            fontSize={9 * scaleFactor}
+                            fontSize={9}
                             fontFamily="monospace"
                             fontWeight="bold"
                             pointerEvents="none"
@@ -705,7 +1173,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                         </g>
                       ))}
 
-                      {/* PUNTOS MEDIOS [+] PARA INSERTAR NUEVOS VÉRTICES */}
+                      {/* PUNTOS MEDIOS [+] PARA INSERTAR NUEVOS VÉRTICES (ESCALADOS CON 1/ZOOM) */}
                       {isSelected && isEditingPolygon && pts.map((p, idx) => {
                         const nextP = pts[(idx + 1) % pts.length];
                         const mx = (p.x + nextP.x) / 2;
@@ -713,28 +1181,26 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                         return (
                           <g
                             key={`mid-${zona.id}-${idx}`}
+                            transform={`translate(${mx}, ${my}) scale(${invZoom})`}
                             className="cursor-pointer group select-none"
                             onClick={(e) => {
                               e.stopPropagation();
                               handleInsertVertex(idx, mx, my);
                             }}
                           >
-                            <circle cx={mx} cy={my} r={14 * scaleFactor} fill="transparent" />
+                            <circle r={11} fill="transparent" />
                             <circle
-                              cx={mx}
-                              cy={my}
-                              r={8 * scaleFactor}
+                              r={5.5}
                               fill="#090d16"
                               stroke="#38bdf8"
-                              strokeWidth={1.8 * scaleFactor}
-                              className="group-hover:fill-sky-500 group-hover:scale-125 transition-all"
+                              strokeWidth={1.5}
+                              className="group-hover:fill-sky-500 transition-colors"
                             />
                             <text
-                              x={mx}
-                              y={my + 3.5 * scaleFactor}
+                              y={3}
                               textAnchor="middle"
                               fill="#38bdf8"
-                              fontSize={11 * scaleFactor}
+                              fontSize={9}
                               fontWeight="bold"
                               className="group-hover:fill-white pointer-events-none"
                             >
@@ -752,15 +1218,15 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   <g className="pointer-events-none">
                     <polyline
                       points={drawingPoints.map(p => `${p.x},${p.y}`).join(' ')}
-                      fill={drawingPoints.length >= 3 ? 'rgba(56, 189, 248, 0.2)' : 'none'}
+                      fill={drawingPoints.length >= 3 ? 'rgba(56, 189, 248, 0.18)' : 'none'}
                       stroke="#38bdf8"
-                      strokeWidth={3}
-                      strokeDasharray="6,4"
+                      strokeWidth={2 * invZoom}
+                      strokeDasharray={`${5 * invZoom},${4 * invZoom}`}
                     />
                     {drawingPoints.map((pt, i) => (
-                      <g key={i}>
-                        <circle cx={pt.x} cy={pt.y} r={8 * scaleFactor} fill="#0284c7" stroke="#ffffff" strokeWidth={2} />
-                        <text x={pt.x} y={pt.y - 12} fill="#38bdf8" fontSize={11} fontWeight="bold" textAnchor="middle">
+                      <g key={i} transform={`translate(${pt.x}, ${pt.y}) scale(${invZoom})`}>
+                        <circle r={5.5} fill="#0284c7" stroke="#ffffff" strokeWidth={1.8} />
+                        <text y={-9} fill="#38bdf8" fontSize={10} fontWeight="bold" textAnchor="middle">
                           #{i + 1}
                         </text>
                       </g>
@@ -768,7 +1234,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   </g>
                 )}
 
-                {/* CAPA 2: Pines de Activos Físicos con Semáforo */}
+                {/* CAPA 2: Pines de Activos Físicos con Semáforo (RESPONSIVOS 1/ZOOM) */}
                 {showPinsLayer && elementos.map((elem) => {
                   const isSelected = selectedElementoId === elem.id;
                   const color = getSemaforoColor(elem.estado_actual);
@@ -778,6 +1244,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   return (
                     <g
                       key={elem.id}
+                      transform={`translate(${x}, ${y}) scale(${invZoom})`}
                       className="cursor-pointer group"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -787,35 +1254,33 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                     >
                       {color.pulse && (
                         <circle
-                          cx={x}
-                          cy={y}
-                          r={20 * scaleFactor}
+                          r={13}
                           fill={color.fill}
                           opacity="0.3"
                           className="animate-ping"
                         />
                       )}
                       <circle
-                        cx={x}
-                        cy={y}
-                        r={isSelected ? 14 * scaleFactor : 10 * scaleFactor}
+                        r={isSelected ? 8.5 : 6}
                         fill={color.fill}
                         stroke="#ffffff"
-                        strokeWidth={isSelected ? 3 * scaleFactor : 2 * scaleFactor}
-                        className="transition-all group-hover:scale-125"
+                        strokeWidth={isSelected ? 2.2 : 1.5}
+                        className="transition-transform group-hover:scale-125"
                       />
-                      <circle
-                        cx={x}
-                        cy={y}
-                        r={4 * scaleFactor}
-                        fill="#ffffff"
-                      />
-                      <g transform={`translate(${x}, ${y - 16 * scaleFactor})`} className="opacity-90 group-hover:opacity-100">
+                      <circle r={2.2} fill="#ffffff" />
+
+                      {/* Etiqueta compacta: visible en hover, selección o si labelMode !== 'none' */}
+                      <g
+                        transform="translate(0, -11)"
+                        className={`transition-opacity pointer-events-none ${
+                          isSelected || labelMode !== 'none' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                        }`}
+                      >
                         <rect
-                          x={-35 * scaleFactor}
-                          y={-14 * scaleFactor}
-                          width={70 * scaleFactor}
-                          height={14 * scaleFactor}
+                          x={-34}
+                          y={-14}
+                          width={68}
+                          height={14}
                           rx={3}
                           fill="#090d16"
                           stroke={isSelected ? '#38bdf8' : '#334155'}
@@ -823,9 +1288,9 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                         />
                         <text
                           x="0"
-                          y={-4 * scaleFactor}
+                          y={-4.5}
                           fill="#e2e8f0"
-                          fontSize={9 * scaleFactor}
+                          fontSize={8.5}
                           fontFamily="monospace"
                           fontWeight="bold"
                           textAnchor="middle"
@@ -837,7 +1302,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   );
                 })}
 
-                {/* CAPA 3: Hitos Geográficos y Puntos de Referencia GPS */}
+                {/* CAPA 3: Hitos Geográficos / Puntos GPS (RESPONSIVOS 1/ZOOM - NO TAPAN EL PLANO) */}
                 {showHitosLayer && hitos.filter(h => h.coordenadas_plano).map((hito) => {
                   const isSelected = selectedHitoId === hito.id;
                   const x = hito.coordenadas_plano!.x;
@@ -846,6 +1311,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   return (
                     <g
                       key={hito.id}
+                      transform={`translate(${x}, ${y}) scale(${invZoom})`}
                       className="cursor-pointer group"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -853,55 +1319,49 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       }}
                       filter="url(#pin-shadow)"
                     >
-                      {/* Mira de Georreferenciación (Crosshair GPS) */}
+                      {/* Mira Geodésica Fina (tamaño fijo en pantalla sin importar el zoom) */}
                       <circle
-                        cx={x}
-                        cy={y}
-                        r={16 * scaleFactor}
+                        r={10}
                         fill="transparent"
                         stroke="#10b981"
-                        strokeWidth={1.2 * scaleFactor}
-                        strokeDasharray="3,3"
-                        className="animate-spin"
-                        style={{ animationDuration: '10s' }}
+                        strokeWidth={1.1}
+                        strokeDasharray="2.5,2.5"
                       />
-                      <line x1={x - 20 * scaleFactor} y1={y} x2={x + 20 * scaleFactor} y2={y} stroke="#10b981" strokeWidth={1 * scaleFactor} opacity="0.6" />
-                      <line x1={x} y1={y - 20 * scaleFactor} x2={x} y2={y + 20 * scaleFactor} stroke="#10b981" strokeWidth={1 * scaleFactor} opacity="0.6" />
+                      <line x1={-13} y1={0} x2={13} y2={0} stroke="#10b981" strokeWidth={0.9} opacity="0.7" />
+                      <line x1={0} y1={-13} x2={0} y2={13} stroke="#10b981" strokeWidth={0.9} opacity="0.7" />
 
-                      {/* Pin Central Hito */}
+                      {/* Punto Central GPS Compacto */}
                       <circle
-                        cx={x}
-                        cy={y}
-                        r={isSelected ? 11 * scaleFactor : 8 * scaleFactor}
+                        r={isSelected ? 6.5 : 5}
                         fill="#059669"
                         stroke="#ffffff"
-                        strokeWidth={2 * scaleFactor}
-                        className="transition-all group-hover:scale-125"
+                        strokeWidth={1.6}
+                        className="transition-transform group-hover:scale-125"
                       />
-                      <circle
-                        cx={x}
-                        cy={y}
-                        r={3 * scaleFactor}
-                        fill="#ffffff"
-                      />
+                      <circle r={1.8} fill="#ffffff" />
 
-                      {/* Etiqueta de Coordenadas GPS */}
-                      <g transform={`translate(${x}, ${y - 18 * scaleFactor})`} className="opacity-95 group-hover:opacity-100">
+                      {/* Micro-píldora de Código (siempre discreta; coordenadas completas solo al pasar el mouse o seleccionar) */}
+                      <g
+                        transform="translate(0, -13)"
+                        className={`transition-opacity pointer-events-none ${
+                          isSelected || labelMode !== 'none' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                        }`}
+                      >
                         <rect
-                          x={-45 * scaleFactor}
-                          y={-18 * scaleFactor}
-                          width={90 * scaleFactor}
-                          height={18 * scaleFactor}
+                          x={-48}
+                          y={-20}
+                          width={96}
+                          height={20}
                           rx={4}
-                          fill="#064e3b"
+                          fill="rgba(6, 78, 59, 0.94)"
                           stroke={isSelected ? '#34d399' : '#10b981'}
-                          strokeWidth={1.2}
+                          strokeWidth={1}
                         />
                         <text
                           x="0"
-                          y={-10 * scaleFactor}
+                          y={-11.5}
                           fill="#a7f3d0"
-                          fontSize={8.5 * scaleFactor}
+                          fontSize={8.5}
                           fontFamily="monospace"
                           fontWeight="bold"
                           textAnchor="middle"
@@ -910,9 +1370,9 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                         </text>
                         <text
                           x="0"
-                          y={-2 * scaleFactor}
+                          y={-3.5}
                           fill="#6ee7b7"
-                          fontSize={6.5 * scaleFactor}
+                          fontSize={6.8}
                           fontFamily="monospace"
                           textAnchor="middle"
                         >
@@ -927,6 +1387,19 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
           </>
         )}
       </TransformWrapper>
+
+      {/* LECTURA GPS EN VIVO DEL CURSOR (Esquina inferior izquierda) */}
+      {cursorGps && (
+        <div className="hidden sm:flex absolute bottom-3 left-3 z-20 items-center space-x-2 bg-slate-900/90 backdrop-blur-md px-2.5 py-1 rounded-lg border border-slate-800 text-[10px] font-mono text-slate-400 pointer-events-none">
+          <span className="text-emerald-400 font-bold">
+            📍 {cursorGps.lat.toFixed(5)}, {cursorGps.lng.toFixed(5)}
+          </span>
+          <span>·</span>
+          <span>CAD ({cursorGps.x}, {cursorGps.y})</span>
+          <span>·</span>
+          <span className="text-sky-400">Zoom {currentZoom.toFixed(1)}x</span>
+        </div>
+      )}
 
       {/* DOCK FLOTANTE INFERIOR: Modos de Interacción (Inspeccionar | + Pin | + Zona | + Hito GPS) */}
       <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center space-x-1 sm:space-x-1.5 bg-slate-900/95 backdrop-blur-md px-2 py-1.5 rounded-xl border border-slate-700/80 shadow-2xl text-xs">

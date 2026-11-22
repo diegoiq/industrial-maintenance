@@ -101,6 +101,7 @@ export default function PlanosIngenieriaPage() {
           for (const p of (json.data.planos || [])) await db.planos.put(p);
           for (const z of (json.data.zonas || [])) await db.zonas.put(z);
           for (const e of (json.data.elementos || [])) await db.elementos.put(e);
+          for (const h of (json.data.hitos || [])) await db.hitos.put(h);
           for (const i of (json.data.inspecciones || [])) await db.inspecciones.put(i);
 
           loadedAreas = await db.areas.toArray();
@@ -313,6 +314,7 @@ export default function PlanosIngenieriaPage() {
       const allPlanos = await db.planos.toArray();
       const allZonas = await db.zonas.toArray();
       const allElementos = await db.elementos.toArray();
+      const allHitos = await db.hitos.toArray();
       const allInspecciones = await db.inspecciones.toArray();
 
       const res = await fetch('/api/sync-neon', {
@@ -323,6 +325,7 @@ export default function PlanosIngenieriaPage() {
           planos: allPlanos,
           zonas: allZonas,
           elementos: allElementos,
+          hitos: allHitos,
           inspecciones: allInspecciones
         })
       });
@@ -547,6 +550,8 @@ export default function PlanosIngenieriaPage() {
         <ZoneDrawer
           zona={selectedZona}
           elemento={selectedElemento}
+          currentPlano={currentPlano}
+          hitos={hitosPlano}
           planos={planos}
           onClose={() => {
             setSelectedZona(undefined);
@@ -567,6 +572,14 @@ export default function PlanosIngenieriaPage() {
           onOpenEditZoneModal={(z) => {
             setZoneToEdit(z);
             setIsEditZoneModalOpen(true);
+          }}
+          onUpdateZoneData={handleZoneUpdated}
+          onUpdateElementoData={async (updatedElem) => {
+            await db.elementos.put(updatedElem);
+            setElementos(prev => prev.map(el => el.id === updatedElem.id ? updatedElem : el));
+            setSelectedElemento(updatedElem);
+            setNotification(`Coordenadas de activo "${updatedElem.tag_codigo}" actualizadas.`);
+            setTimeout(() => setNotification(null), 3000);
           }}
         />
       </div>
