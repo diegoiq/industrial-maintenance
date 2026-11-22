@@ -29,7 +29,8 @@ import {
   Activity,
   Info,
   Play,
-  Square
+  Square,
+  LogOut
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import { pullAndReconcileFromCloud, pushFastSyncToCloud } from '../../lib/cloudSync';
@@ -194,6 +195,27 @@ export default function CampoPage() {
   const [lastCompressionRatio, setLastCompressionRatio] = useState<number | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [inspeccionesLocales, setInspeccionesLocales] = useState<Inspeccion[]>([]);
+  const [inspectorNombreActivo, setInspectorNombreActivo] = useState<string>('Operario / Inspector de Campo');
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('im_user_profile');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.nombre) setInspectorNombreActivo(parsed.nombre);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleLogoutCampo = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('im_user_profile');
+      window.location.href = '/login';
+    }
+  };
 
   // Cargar desde IndexedDB y reconciliar instantáneamente desde Neon Cloud (eliminando zonas borradas en PC)
   const loadAndHydrateFieldData = async (forceCloudPull: boolean = false) => {
@@ -574,7 +596,7 @@ export default function CampoPage() {
       elemento_id: targetElemId,
       zona_id: selectedZona?.id,
       zona_codigo: selectedZona?.codigo,
-      inspector_nombre: 'Operario / Inspector de Campo',
+      inspector_nombre: inspectorNombreActivo,
       fecha_inspeccion: new Date().toISOString(),
       estado_sincronizacion: 'pendiente',
       clasificacion_sustrato: sustratoFinal,
@@ -721,6 +743,15 @@ export default function CampoPage() {
           >
             <QrCode className="w-3.5 h-3.5" />
             <span>QR</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLogoutCampo}
+            title={`Cerrar sesión (${inspectorNombreActivo})`}
+            className="p-1.5 bg-slate-950 hover:bg-red-950/60 text-slate-400 hover:text-red-300 border border-slate-800 rounded-lg transition"
+          >
+            <LogOut className="w-4 h-4" />
           </button>
         </div>
       </header>

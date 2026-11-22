@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { 
   Map, 
   Sliders, 
@@ -15,7 +15,9 @@ import {
   Menu,
   X,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  LogOut,
+  User
 } from 'lucide-react';
 
 export default function IngenieriaLayout({
@@ -24,7 +26,9 @@ export default function IngenieriaLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [currentUserRole, setCurrentUserRole] = useState<'admin' | 'ingeniero' | 'inspector' | 'consulta'>('admin');
+  const [currentUserName, setCurrentUserName] = useState<string>('Ingeniería Planta');
   
   // Por defecto colapsado a Icon Rail en /ingenieria/planos para maximizar el canvas
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(true);
@@ -32,7 +36,26 @@ export default function IngenieriaLayout({
 
   useEffect(() => {
     setIsMobileMenuOpen(false);
+    try {
+      const saved = window.localStorage.getItem('im_user_profile');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.nombre) setCurrentUserName(parsed.nombre);
+        if (parsed.rol) setCurrentUserRole(parsed.rol);
+      }
+    } catch {
+      // ignore
+    }
   }, [pathname]);
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('im_user_profile');
+    }
+    router.push('/login');
+    router.refresh();
+  };
 
   const navItems = [
     {
@@ -128,26 +151,21 @@ export default function IngenieriaLayout({
             </button>
           </div>
 
-          {/* Selector de Rol simulado */}
+          {/* Usuario Autenticado y Rol */}
           {(!isSidebarCollapsed || isMobileMenuOpen) ? (
             <div className="bg-slate-950 p-2 rounded-lg border border-slate-800/80 space-y-1">
-              <div className="flex items-center justify-between text-[9px] text-slate-400">
-                <span>ROL ACTIVO:</span>
-                <span className="font-mono text-emerald-400 font-bold uppercase">{currentUserRole}</span>
+              <div className="flex items-center justify-between text-[10px] text-slate-300 font-bold truncate">
+                <span className="flex items-center space-x-1 truncate">
+                  <User className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                  <span className="truncate">{currentUserName}</span>
+                </span>
+                <span className="font-mono text-[9px] text-emerald-400 uppercase px-1.5 py-0.5 bg-emerald-950 rounded border border-emerald-800">
+                  {currentUserRole}
+                </span>
               </div>
-              <select
-                value={currentUserRole}
-                onChange={(e) => setCurrentUserRole(e.target.value as any)}
-                className="w-full bg-slate-900 border border-slate-700 text-[11px] rounded p-1 text-slate-200 focus:outline-none"
-              >
-                <option value="admin">Admin (Total)</option>
-                <option value="ingeniero">Ingeniero</option>
-                <option value="inspector">Inspector</option>
-                <option value="consulta">Consulta</option>
-              </select>
             </div>
           ) : (
-            <div className="hidden lg:flex justify-center" title={`Rol: ${currentUserRole}`}>
+            <div className="hidden lg:flex justify-center" title={`${currentUserName} (${currentUserRole})`}>
               <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 my-1 animate-pulse" />
             </div>
           )}
@@ -204,19 +222,33 @@ export default function IngenieriaLayout({
           </div>
         </div>
 
-        {/* Telemetría Cloud */}
-        {(!isSidebarCollapsed || isMobileMenuOpen) && (
-          <div className="border-t border-slate-800 pt-2 text-[10px] text-slate-500 space-y-0.5">
-            <div className="flex items-center justify-between">
-              <span>Stack Cloud:</span>
-              <span className="text-emerald-400 font-mono">Vercel Edge</span>
+        {/* Botón Cerrar Sesión y Telemetría Cloud */}
+        <div className="border-t border-slate-800 pt-2 space-y-2">
+          <button
+            type="button"
+            onClick={handleLogout}
+            title="Cerrar Sesión"
+            className={`w-full flex items-center text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded-lg text-xs font-semibold transition ${
+              isSidebarCollapsed && !isMobileMenuOpen ? 'justify-center p-2' : 'space-x-2 px-2.5 py-1.5'
+            }`}
+          >
+            <LogOut className="w-4 h-4 flex-shrink-0" />
+            {(!isSidebarCollapsed || isMobileMenuOpen) && <span>Cerrar Sesión</span>}
+          </button>
+
+          {(!isSidebarCollapsed || isMobileMenuOpen) && (
+            <div className="text-[10px] text-slate-500 space-y-0.5 px-1">
+              <div className="flex items-center justify-between">
+                <span>Stack Cloud:</span>
+                <span className="text-emerald-400 font-mono">Vercel Edge</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Almacenamiento:</span>
+                <span className="text-emerald-400 font-mono">Neon + B2</span>
+              </div>
             </div>
-            <div className="flex items-center justify-between">
-              <span>Almacenamiento:</span>
-              <span className="text-emerald-400 font-mono">Neon + B2</span>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </aside>
 
       {/* Contenido Principal */}
