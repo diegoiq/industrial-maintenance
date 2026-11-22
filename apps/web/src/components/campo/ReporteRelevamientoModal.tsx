@@ -1,21 +1,20 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   X, 
   Printer, 
   FileSpreadsheet, 
-  CheckCircle2, 
-  AlertTriangle, 
   Clock, 
   Layers, 
   HardHat, 
-  ShieldAlert, 
-  TrendingUp,
-  Building2,
-  Calendar
+  Calendar,
+  Globe,
+  Camera
 } from 'lucide-react';
-import { Area, Elemento, Inspeccion, Plano } from '../../types';
+import { Area, Elemento, Inspeccion, Plano, ZonaInspeccion } from '../../types';
+import { db } from '../../lib/db';
+import { calculatePolygonAreaM2, getOrInitGeoreferencia, getPolygonCentroid, pixelToLatLng } from '../../lib/georeferenceEngine';
 
 interface ReporteRelevamientoModalProps {
   isOpen: boolean;
@@ -24,6 +23,7 @@ interface ReporteRelevamientoModalProps {
   elementos: Elemento[];
   inspecciones: Inspeccion[];
   plano?: Plano;
+  zonas?: ZonaInspeccion[];
 }
 
 export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> = ({
@@ -32,68 +32,90 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
   area,
   elementos,
   inspecciones,
-  plano
+  plano,
+  zonas: propZonas
 }) => {
+  const [zonasLocales, setZonasLocales] = useState<ZonaInspeccion[]>([]);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (propZonas && propZonas.length > 0) {
+        setZonasLocales(propZonas);
+      } else {
+        db.zonas.toArray().then(setZonasLocales);
+      }
+    }
+  }, [isOpen, propZonas]);
+
   if (!isOpen) return null;
 
-  // Cálculos del Relevamiento
-  const totalActivos = elementos.length;
-  const activosInspeccionados = elementos.filter(e => e.estado_actual !== 'gris');
-  const totalInspeccionados = activosInspeccionados.length;
-  const porcentajeAvance = totalActivos > 0 ? Math.round((totalInspeccionados / totalActivos) * 100) : 0;
-  const pendientes = totalActivos - totalInspeccionados;
+  const geoCal = getOrInitGeoreferencia(plano);
+  const zonasReporte = plano ? zonasLocales.filter(z => z.plano_id === plano.id) : zonasLocales;
 
-  const criticosRojos = elementos.filter(e => e.estado_actual === 'rojo').length;
-  const severosNaranjas = elementos.filter(e => e.estado_actual === 'naranja').length;
-  const incipientesAmarillos = elementos.filter(e => e.estado_actual === 'amarillo').length;
-  const normalesVerdes = elementos.filter(e => e.estado_actual === 'verde').length;
+  // Métricas consolidadas por Zonas + Elementos (Funciona en Revisión Preliminar de Gabinete y en Relevamiento de Campo)
+  const totalZonas = zonasReporte.length;
+  const zonasConInspeccion = zonasReporte.filter(z =>
+    inspecciones.some(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`)
+  ).length;
 
-  const m2Totales = elementos.reduce((acc, el) => acc + (el.geometria_parametros?.m2_superficie || 0), 0);
-  const m2Afectados = elementos.reduce((acc, el) => {
-    if (el.estado_actual === 'rojo' || el.estado_actual === 'naranja') {
-      return acc + (el.geometria_parametros?.m2_superficie || 0);
-    }
-    return acc;
+  const m2TotalesZonas = zonasReporte.reduce((acc, z) => {
+    const calcM2 = calculatePolygonAreaM2(z.poligono_svg?.puntos || [], geoCal);
+    return acc + (z.superficie_estimada_m2 && z.superficie_estimada_m2 > 0 ? z.superficie_estimada_m2 : (calcM2 || 250));
   }, 0);
 
-  const kgReemplazo = elementos.reduce((acc, el) => {
-    if (el.estado_actual === 'rojo') {
-      return acc + (el.geometria_parametros?.peso_kg || 0);
-    }
-    return acc;
+  const m3AndamioTotales = zonasReporte.reduce((acc, z) => {
+    return acc + (z.nivel_acceso_andamio?.requiere_andamio !== false ? (z.nivel_acceso_andamio?.envolvente_m3 || 180) : 0);
   }, 0);
 
-  // Manejador para imprimir / guardar como PDF nativo
+  // Estimación preliminar de HH y Presupuesto
+  const hhPreliminares = Math.round(m2TotalesZonas * 0.30 * 0.45 + m3AndamioTotales * 0.12);
+  const presupuestoPreliminarUsd = Math.round(m2TotalesZonas * 0.30 * 18.20 + hhPreliminares * 28.50 + m3AndamioTotales * 12.00);
+
+  const totalFotos = inspecciones.reduce((acc, i) => acc + (i.fotos?.length || 0), 0);
+  const instanciaTexto = inspecciones.length === 0
+    ? 'INSTANCIA 1: REVISIÓN PRELIMINAR DE INGENIERÍA Y ZONIFICACIÓN GEORREFERENCIADA'
+    : zonasConInspeccion < totalZonas
+    ? `INSTANCIA 2: RELEVAMIENTO DE CAMPO EN PROGRESO (${zonasConInspeccion}/${totalZonas} Zonas relevadas)`
+    : 'INSTANCIA 3: RELEVAMIENTO DE CAMPO COMPLETADO Y DOCUMENTADO';
+
   const handlePrint = () => {
     window.print();
   };
 
-  // Manejador para exportar a CSV para SAP PM / ERP
   const handleExportCSV = () => {
     const headers = [
-      'TAG_ACTIVO',
-      'CODIGO_ERP',
-      'AREA',
-      'TIPO_ELEMENTO',
-      'ESTADO_SEMAFORO',
-      'M2_SUPERFICIE',
-      'KG_PESO',
-      'REQUIERE_REEMPLAZO',
-      'FECHA_INSPECCION'
+      'CODIGO_ZONA',
+      'NOMBRE_SECTOR',
+      'COTA_NIVEL_M',
+      'COORDENADAS_GPS',
+      'DISCIPLINAS',
+      'SUPERFICIE_M2',
+      'ANDAMIO_M3',
+      'ALTURA_ACCESO_M',
+      'MODALIDAD_EJECUCION',
+      'CONDICION_PRELIMINAR',
+      'INSPECCIONES_REGISTRADAS'
     ];
 
-    const rows = elementos.map(el => {
-      const insp = inspecciones.find(i => i.elemento_id === el.id);
+    const rows = zonasReporte.map(z => {
+      const centroid = getPolygonCentroid(z.poligono_svg?.puntos || []);
+      const gps = z.coordenadas_gps_override || pixelToLatLng(centroid.x, centroid.y, geoCal);
+      const calcM2 = calculatePolygonAreaM2(z.poligono_svg?.puntos || [], geoCal);
+      const m2 = z.superficie_estimada_m2 || calcM2 || 250;
+      const inspCount = inspecciones.filter(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`).length;
+
       return [
-        el.tag_codigo,
-        el.codigo_equipo_erp || 'N/A',
-        area?.nombre || 'General',
-        el.tipo_elemento,
-        el.estado_actual.toUpperCase(),
-        el.geometria_parametros.m2_superficie,
-        el.geometria_parametros.peso_kg,
-        el.estado_actual === 'rojo' ? 'SI' : 'NO',
-        insp?.fecha_inspeccion ? new Date(insp.fecha_inspeccion).toLocaleDateString() : 'PENDIENTE'
+        `"${z.codigo}"`,
+        `"${z.nombre}"`,
+        `+${(Number(z.cota_nivel || 146000) / 1000).toFixed(1)}m`,
+        `"${gps.lat.toFixed(5)}, ${gps.lng.toFixed(5)}"`,
+        `"${(z.disciplinas_involucradas || []).join(' | ')}"`,
+        m2,
+        z.nivel_acceso_andamio?.envolvente_m3 || 180,
+        z.nivel_acceso_andamio?.altura_mts || 6.5,
+        z.nivel_acceso_andamio?.requiere_parada ? 'PARADA DE PLANTA' : 'EN MARCHA',
+        (z.estado_salud_apriori || 'regular').toUpperCase(),
+        inspCount
       ].join(';');
     });
 
@@ -101,7 +123,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `REPORTE_RELEVAMIENTO_${area?.codigo || 'PLANTA'}_${new Date().toISOString().substring(0, 10)}.csv`);
+    link.setAttribute('download', `INFORME_PRELIMINAR_${plano?.titulo || 'PLANTA'}_${new Date().toISOString().substring(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -109,13 +131,13 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/90 backdrop-blur-md overflow-y-auto">
-      <div className="w-full max-w-4xl bg-slate-900 border-2 border-amber-500/70 rounded-2xl overflow-hidden shadow-2xl flex flex-col my-6 max-h-[92vh]">
+      <div className="w-full max-w-5xl bg-slate-900 border-2 border-amber-500/70 rounded-2xl overflow-hidden shadow-2xl flex flex-col my-6 max-h-[93vh]">
         {/* Barra superior de acciones (no imprimible) */}
         <div className="flex items-center justify-between px-6 py-3.5 bg-slate-800 border-b border-slate-700 print:hidden flex-shrink-0">
           <div className="flex items-center space-x-2">
             <HardHat className="w-5 h-5 text-amber-400" />
             <span className="text-sm font-black text-white uppercase tracking-wider">
-              Reporte Ejecutivo de Relevamiento e Integridad Estructural
+              Informe Modelo — Revisión Preliminar y Relevamiento de Integridad
             </span>
           </div>
           <div className="flex items-center space-x-2">
@@ -125,7 +147,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
               className="flex items-center space-x-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-lg transition shadow"
             >
               <Printer className="w-4 h-4" />
-              <span>Imprimir / PDF</span>
+              <span>Imprimir / Guardar PDF</span>
             </button>
             <button
               type="button"
@@ -133,7 +155,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
               className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition shadow"
             >
               <FileSpreadsheet className="w-4 h-4" />
-              <span>Exportar SAP PM</span>
+              <span>Exportar CSV (SAP PM)</span>
             </button>
             <button
               onClick={onClose}
@@ -144,177 +166,135 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
           </div>
         </div>
 
-        {/* Contenido Imprimible del Informe */}
-        <div className="p-6 overflow-y-auto space-y-6 text-slate-100 bg-slate-950 print:bg-white print:text-black">
-          {/* Encabezado Corporativo Oficial */}
+        {/* Documento Imprimible A4 */}
+        <div className="p-6 sm:p-8 overflow-y-auto space-y-6 text-slate-100 bg-slate-950 print:bg-white print:text-black">
+          {/* 1. ENCABEZADO OFICIAL CORPORATIVO */}
           <div className="border-b-2 border-amber-500 pb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
               <span className="text-[11px] font-mono text-amber-400 uppercase tracking-widest font-black block print:text-amber-700">
                 INDUSTRIAL MAINTENANCE · ASSET INTEGRITY & CORROSION MANAGEMENT
               </span>
-              <h1 className="text-2xl font-black text-white tracking-tight print:text-black">
-                INFORME TÉCNICO DE RELEVAMIENTO DE CAMPO
+              <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight print:text-black mt-0.5">
+                INFORME TÉCNICO DE REVISIÓN PRELIMINAR Y ZONIFICACIÓN
               </h1>
-              <p className="text-xs text-slate-400 print:text-gray-600 mt-1">
-                Área Evaluada: <strong className="text-white print:text-black">{area ? `${area.codigo} - ${area.nombre}` : 'Planta Completa'}</strong> {area?.ubicacion_tecnica_erp ? `(Ubicación Técnica: ${area.ubicacion_tecnica_erp})` : ''}
+              <p className="text-xs text-slate-300 print:text-gray-700 mt-1">
+                Planta / Área: <strong className="text-white print:text-black">{area ? `${area.codigo} — ${area.nombre}` : 'Celulosa Puerto Esperanza'}</strong> · Plano: <strong>{plano ? plano.titulo : 'LAY OUT GENERAL'}</strong>
+              </p>
+              <p className="text-[11px] font-mono text-emerald-400 print:text-emerald-700 mt-0.5 flex items-center space-x-1">
+                <Globe className="w-3.5 h-3.5 inline mr-1" />
+                <span>
+                  Georreferencia Satelital: Lat {geoCal.anchorLat.toFixed(5)}, Lng {geoCal.anchorLng.toFixed(5)} · Escala: {geoCal.metersPerPixel.toFixed(4)} m/px · Norte: {geoCal.rotationDeg}°
+                </span>
               </p>
             </div>
 
-            <div className="text-right text-xs bg-slate-900 print:bg-gray-100 p-3 rounded-lg border border-slate-800 print:border-gray-300">
-              <div className="flex items-center justify-end space-x-1.5 text-slate-300 print:text-black">
+            <div className="text-right text-xs bg-slate-900 print:bg-gray-100 p-3 rounded-xl border border-slate-800 print:border-gray-300 flex-shrink-0">
+              <div className="flex items-center justify-end space-x-1.5 text-slate-200 print:text-black">
                 <Calendar className="w-3.5 h-3.5 text-amber-400" />
-                <span>Fecha: <strong>{new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })}</strong></span>
+                <span>Emisión: <strong>{new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })}</strong></span>
               </div>
-              <span className="text-[11px] text-slate-400 print:text-gray-600 block mt-0.5">
-                Plano: {plano ? plano.titulo : 'Layout General'}
-              </span>
-              <span className="text-[11px] font-mono text-emerald-400 print:text-emerald-700 font-bold block mt-0.5">
-                Estado: {porcentajeAvance === 100 ? '✅ RELEVAMIENTO FINALIZADO' : `⏳ EN PROGRESO (${porcentajeAvance}%)`}
+              <span className="text-[10px] font-mono text-sky-400 print:text-sky-700 font-bold block mt-1">
+                {instanciaTexto}
               </span>
             </div>
           </div>
 
-          {/* Tarjetas de Resumen Ejecutivo y KPIs */}
+          {/* 2. RESUMEN EJECUTIVO DE KPIS DE INGENIERÍA */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-slate-900 print:bg-gray-100 p-3 rounded-xl border border-slate-800 print:border-gray-300">
-              <span className="text-[10px] uppercase text-slate-400 print:text-gray-600 font-bold block">Progreso Global</span>
-              <span className="text-xl font-extrabold text-white print:text-black">{porcentajeAvance}%</span>
+            <div className="bg-slate-900 print:bg-gray-100 p-3.5 rounded-xl border border-slate-800 print:border-gray-300">
+              <span className="text-[10px] uppercase text-slate-400 print:text-gray-600 font-bold block">Zonas Delimitadas</span>
+              <span className="text-2xl font-black text-sky-400 print:text-sky-800 font-mono">{totalZonas} Zonas</span>
               <span className="text-[11px] text-slate-400 print:text-gray-600 block mt-0.5">
-                {totalInspeccionados} de {totalActivos} relevados
+                {elementos.length} hallazgos / pines puntuales
               </span>
             </div>
 
-            <div className="bg-red-950/40 print:bg-red-100 p-3 rounded-xl border border-red-500/50 print:border-red-400">
-              <span className="text-[10px] uppercase text-red-300 print:text-red-700 font-bold block">Críticos (Rojo)</span>
-              <span className="text-xl font-extrabold text-red-400 print:text-red-700">{criticosRojos}</span>
-              <span className="text-[11px] text-red-300/80 print:text-red-600 block mt-0.5">
-                {kgReemplazo.toFixed(0)} kg acero a cambiar
+            <div className="bg-slate-900 print:bg-gray-100 p-3.5 rounded-xl border border-slate-800 print:border-gray-300">
+              <span className="text-[10px] uppercase text-slate-400 print:text-gray-600 font-bold block">Superficie Estimada</span>
+              <span className="text-2xl font-black text-white print:text-black font-mono">{m2TotalesZonas.toLocaleString()} m²</span>
+              <span className="text-[11px] text-emerald-400 print:text-emerald-700 block mt-0.5">
+                Alcance de protección anticorrosiva
               </span>
             </div>
 
-            <div className="bg-amber-950/40 print:bg-amber-100 p-3 rounded-xl border border-amber-500/50 print:border-amber-400">
-              <span className="text-[10px] uppercase text-amber-300 print:text-amber-700 font-bold block">Severos / Naranja</span>
-              <span className="text-xl font-extrabold text-amber-400 print:text-amber-700">{severosNaranjas}</span>
-              <span className="text-[11px] text-amber-300/80 print:text-amber-600 block mt-0.5">
-                {incipientesAmarillos} incipientes (amarillo)
+            <div className="bg-slate-900 print:bg-gray-100 p-3.5 rounded-xl border border-slate-800 print:border-gray-300">
+              <span className="text-[10px] uppercase text-slate-400 print:text-gray-600 font-bold block">Envolvente Andamios</span>
+              <span className="text-2xl font-black text-purple-400 print:text-purple-800 font-mono">{m3AndamioTotales.toLocaleString()} m³</span>
+              <span className="text-[11px] text-slate-400 print:text-gray-600 block mt-0.5">
+                Andamio compartido multifunción
               </span>
             </div>
 
-            <div className="bg-emerald-950/40 print:bg-emerald-100 p-3 rounded-xl border border-emerald-500/50 print:border-emerald-400">
-              <span className="text-[10px] uppercase text-emerald-300 print:text-emerald-700 font-bold block">Superficie Total</span>
-              <span className="text-xl font-extrabold text-emerald-400 print:text-emerald-700">{m2Totales.toFixed(0)} m²</span>
-              <span className="text-[11px] text-emerald-300/80 print:text-emerald-600 block mt-0.5">
-                {m2Afectados.toFixed(0)} m² a intervenir
+            <div className="bg-slate-900 print:bg-gray-100 p-3.5 rounded-xl border border-slate-800 print:border-gray-300">
+              <span className="text-[10px] uppercase text-slate-400 print:text-gray-600 font-bold block">Estimación Preliminar</span>
+              <span className="text-2xl font-black text-emerald-400 print:text-emerald-800 font-mono">${presupuestoPreliminarUsd.toLocaleString()}</span>
+              <span className="text-[11px] text-amber-400 print:text-amber-700 block mt-0.5 font-mono">
+                ~{hhPreliminares} HH estimadas
               </span>
             </div>
           </div>
 
-          {/* Timeline de Avance del Relevamiento */}
-          <div className="bg-slate-900 print:bg-gray-100 p-4 rounded-xl border border-slate-800 print:border-gray-300 space-y-2">
-            <div className="flex items-center justify-between text-xs font-bold">
-              <span className="text-slate-300 print:text-gray-800 uppercase tracking-wider flex items-center space-x-1.5">
-                <Clock className="w-4 h-4 text-sky-400" />
-                <span>Estado de Culminación del Relevamiento</span>
-              </span>
-              <span className="text-sky-400 print:text-sky-700 font-mono">
-                {pendientes === 0 ? '100% CUBIERTO - LISTO PARA VALIDACIÓN' : `${pendientes} activos pendientes por relevar`}
-              </span>
-            </div>
-            
-            {/* Barra de progreso visual */}
-            <div className="w-full bg-slate-950 print:bg-gray-300 rounded-full h-3 overflow-hidden flex">
-              <div 
-                className="bg-emerald-500 h-full transition-all duration-500" 
-                style={{ width: `${porcentajeAvance}%` }}
-                title={`${porcentajeAvance}% Completado`}
-              />
-              <div 
-                className="bg-slate-700 h-full transition-all duration-500" 
-                style={{ width: `${100 - porcentajeAvance}%` }}
-                title={`${100 - porcentajeAvance}% Pendiente`}
-              />
-            </div>
-          </div>
-
-          {/* Tabla de Activos Relevados */}
-          <div className="space-y-3">
-            <h3 className="text-xs font-extrabold text-slate-300 print:text-black uppercase tracking-wider flex items-center space-x-2">
-              <Layers className="w-4 h-4 text-amber-400" />
-              <span>Inventario y Condición Técnica de Activos Mapeados</span>
+          {/* 3. MATRIZ MAESTRA DE ZONAS DE INSPECCIÓN Y PAQUETES DE TRABAJO */}
+          <div className="space-y-2.5">
+            <h3 className="text-xs font-extrabold text-slate-200 print:text-black uppercase tracking-wider flex items-center space-x-2">
+              <Layers className="w-4 h-4 text-sky-400" />
+              <span>1. Matriz de Zonas de Inspección Georreferenciadas y Requerimientos de Acceso</span>
             </h3>
 
             <div className="border border-slate-800 print:border-gray-300 rounded-xl overflow-hidden">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
-                  <tr className="bg-slate-900 print:bg-gray-200 text-slate-400 print:text-gray-700 border-b border-slate-800 print:border-gray-300 font-mono text-[11px]">
-                    <th className="p-2.5">TAG Activo</th>
-                    <th className="p-2.5">Tipo / Perfil</th>
-                    <th className="p-2.5">Superficie / Peso</th>
-                    <th className="p-2.5">Condición Semáforo</th>
-                    <th className="p-2.5">Corrosión (ISO)</th>
-                    <th className="p-2.5 text-right">Ventana Óptima</th>
+                  <tr className="bg-slate-900 print:bg-gray-200 text-slate-300 print:text-gray-800 border-b border-slate-800 print:border-gray-300 font-mono text-[10px] uppercase">
+                    <th className="p-2.5">Código Zona</th>
+                    <th className="p-2.5">Sector / Alcance</th>
+                    <th className="p-2.5">Cota & Coordenadas GPS</th>
+                    <th className="p-2.5">Superficie</th>
+                    <th className="p-2.5">Acceso / Andamio</th>
+                    <th className="p-2.5">Condición / Ventana</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800 print:divide-gray-200">
-                  {elementos.map(el => {
-                    const insp = inspecciones.find(i => i.elemento_id === el.id);
+                <tbody className="divide-y divide-slate-800 print:divide-gray-300">
+                  {zonasReporte.map((z) => {
+                    const centroid = getPolygonCentroid(z.poligono_svg?.puntos || []);
+                    const gps = z.coordenadas_gps_override || pixelToLatLng(centroid.x, centroid.y, geoCal);
+                    const calcM2 = calculatePolygonAreaM2(z.poligono_svg?.puntos || [], geoCal);
+                    const m2 = z.superficie_estimada_m2 || calcM2 || 250;
+                    const inspZona = inspecciones.filter(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`);
+                    const ultimaInsp = inspZona[0];
+
                     return (
-                      <tr key={el.id} className="hover:bg-slate-900/50 print:hover:bg-transparent">
-                        <td className="p-2.5 font-bold font-mono text-white print:text-black">
-                          {el.tag_codigo}
-                          {el.codigo_equipo_erp && (
-                            <span className="block text-[10px] text-slate-400 print:text-gray-600 font-normal">
-                              ERP: {el.codigo_equipo_erp}
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-2.5 capitalize text-slate-300 print:text-gray-800">
-                          {el.tipo_elemento.replace('_', ' ')}
-                          <span className="block text-[10px] text-amber-400 font-mono">
-                            {el.geometria_parametros?.perfil || 'Estándar'}
-                          </span>
-                        </td>
-                        <td className="p-2.5 font-mono text-slate-300 print:text-gray-800">
-                          {el.geometria_parametros?.m2_superficie} m² · {el.geometria_parametros?.peso_kg} kg
+                      <tr key={z.id} className="hover:bg-slate-900/50">
+                        <td className="p-2.5 font-mono font-black text-amber-400 print:text-amber-800">
+                          {z.codigo}
                         </td>
                         <td className="p-2.5">
-                          {el.estado_actual === 'rojo' && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-950 text-red-300 border border-red-500 print:bg-red-100 print:text-red-700">
-                              CRÍTICO (REEMPLAZO)
-                            </span>
-                          )}
-                          {el.estado_actual === 'naranja' && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-950 text-orange-300 border border-orange-500 print:bg-orange-100 print:text-orange-700">
-                              CORROSIÓN SEVERA
-                            </span>
-                          )}
-                          {el.estado_actual === 'amarillo' && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-500 print:bg-amber-100 print:text-amber-700">
-                              DETERIORO INCIPIENTE
-                            </span>
-                          )}
-                          {el.estado_actual === 'verde' && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-500 print:bg-emerald-100 print:text-emerald-700">
-                              CONDICIÓN NORMAL
-                            </span>
-                          )}
-                          {el.estado_actual === 'gris' && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 print:bg-gray-100 print:text-gray-600">
-                              PENDIENTE
-                            </span>
-                          )}
+                          <span className="font-bold text-white print:text-black block">{z.nombre}</span>
+                          <span className="text-[10px] text-slate-400 print:text-gray-600 capitalize">
+                            {(z.disciplinas_involucradas || ['estructuras_acero']).map(d => d.replace(/_/g, ' ')).join(', ')}
+                          </span>
                         </td>
-                        <td className="p-2.5 font-mono text-slate-300 print:text-gray-800">
-                          {insp ? `${insp.grado_corrosion} (${insp.porcentaje_afectado}%)` : 'S/D'}
+                        <td className="p-2.5 font-mono text-[11px] text-slate-300 print:text-gray-800">
+                          Cota +{(Number(z.cota_nivel || 146000) / 1000).toFixed(1)} m
+                          <span className="block text-[10px] text-emerald-400 print:text-emerald-700">
+                            {gps.lat.toFixed(5)}, {gps.lng.toFixed(5)}
+                          </span>
                         </td>
-                        <td className="p-2.5 text-right font-mono font-bold">
-                          {el.estado_actual === 'rojo' ? (
-                            <span className="text-red-400 print:text-red-700">INMEDIATO (0-3 meses)</span>
-                          ) : el.estado_actual === 'naranja' ? (
-                            <span className="text-amber-400 print:text-amber-700">PRÓX. PARADA (6-12 m)</span>
-                          ) : (
-                            <span className="text-slate-400 print:text-gray-600">PROGRAMADO (24-36 m)</span>
-                          )}
+                        <td className="p-2.5 font-mono font-bold text-white print:text-black">
+                          {m2} m²
+                        </td>
+                        <td className="p-2.5 font-mono text-[11px] text-purple-300 print:text-purple-800">
+                          {z.nivel_acceso_andamio?.envolvente_m3 || 180} m³ (H: {z.nivel_acceso_andamio?.altura_mts || 6.5}m)
+                          <span className="block text-[10px] text-slate-400 print:text-gray-600 capitalize">
+                            {z.nivel_acceso_andamio?.tipo_acceso?.replace(/_/g, ' ') || 'Andamio tubular'}
+                          </span>
+                        </td>
+                        <td className="p-2.5">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase font-mono bg-slate-800 text-amber-300 border border-slate-700 print:bg-gray-200 print:text-black">
+                            {ultimaInsp ? `${ultimaInsp.grado_corrosion} (${ultimaInsp.porcentaje_afectado}%)` : (z.estado_salud_apriori || 'REGULAR')}
+                          </span>
+                          <span className="block text-[10px] text-slate-400 print:text-gray-600 mt-0.5 font-mono">
+                            {z.nivel_acceso_andamio?.requiere_parada ? '🔴 Parada de Planta' : '🟢 En Marcha'}
+                          </span>
                         </td>
                       </tr>
                     );
@@ -324,17 +304,81 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
             </div>
           </div>
 
-          {/* Firmas y Validación Técnica (Para entregar firmado a gerencia) */}
+          {/* 4. REGISTRO DE HALLAZGOS DE CAMPO, FOTOS Y DIAGNÓSTICO TÉCNICO */}
+          <div className="space-y-2.5">
+            <h3 className="text-xs font-extrabold text-slate-200 print:text-black uppercase tracking-wider flex items-center space-x-2">
+              <Camera className="w-4 h-4 text-amber-400" />
+              <span>2. Relevamiento de Campo, Hallazgos Puntuales y Registro Fotográfico ({inspecciones.length} inspecciones · {totalFotos} fotos)</span>
+            </h3>
+
+            {inspecciones.length === 0 && elementos.length === 0 ? (
+              <div className="p-4 bg-slate-900 print:bg-gray-100 rounded-xl border border-slate-800 print:border-gray-300 text-xs text-slate-300 print:text-gray-700 space-y-1">
+                <p className="font-bold text-amber-400 print:text-amber-800">
+                  📋 Estado Documental: Revisión Preliminar de Ingeniería (Previo a Salida de Campo)
+                </p>
+                <p>
+                  Se han delimitado, georreferenciado y pre-cubicado las <strong>{totalZonas} Zonas de Inspección</strong> sobre el plano general. A medida que el inspector recorra las zonas con la App de Campo (`/campo`) y capture fotografías o hallazgos, se anexarán automáticamente en esta sección con su evaluación normativa ISO 4628-3.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {inspecciones.map((insp) => (
+                  <div key={insp.id} className="p-4 bg-slate-900 print:bg-gray-100 rounded-xl border border-slate-800 print:border-gray-300 space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 print:border-gray-300 pb-2">
+                      <div className="flex items-center space-x-2">
+                        <span className="font-mono font-black text-amber-400 print:text-black">
+                          {insp.zona_codigo ? `ZONA: ${insp.zona_codigo}` : insp.elemento_id}
+                        </span>
+                        <span className="px-2 py-0.5 bg-amber-950 text-amber-300 border border-amber-700 rounded font-mono text-[10px] font-bold">
+                          ISO 4628: {insp.grado_corrosion} ({insp.porcentaje_afectado}% afectado)
+                        </span>
+                      </div>
+                      <span className="font-mono text-[11px] text-slate-400">
+                        Fecha: {new Date(insp.fecha_inspeccion).toLocaleDateString()} · {insp.inspector_nombre || 'Inspector Planta'}
+                      </span>
+                    </div>
+
+                    {insp.observaciones && (
+                      <p className="text-slate-200 print:text-black italic">
+                        <strong>Observaciones / Dictamen:</strong> "{insp.observaciones}"
+                      </p>
+                    )}
+
+                    {insp.fotos && insp.fotos.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                        {insp.fotos.map((f, idx) => (
+                          <div key={f.id || idx} className="bg-slate-950 print:bg-white rounded-lg overflow-hidden border border-slate-800 print:border-gray-300">
+                            <img
+                              src={f.thumbnail_data_url || f.storage_url}
+                              alt={`Foto ${idx + 1}`}
+                              className="w-full h-28 object-cover"
+                            />
+                            {f.comentario && (
+                              <p className="p-1.5 text-[10px] text-slate-300 print:text-black truncate">
+                                #{idx + 1}: {f.comentario}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 5. CUADRO DE FIRMAS Y APROBACIÓN TÉCNICA */}
           <div className="pt-8 border-t border-slate-800 print:border-gray-400 grid grid-cols-2 gap-8 text-center text-xs">
             <div className="space-y-1">
               <div className="border-b border-slate-700 print:border-gray-400 h-12 w-48 mx-auto" />
-              <span className="font-bold text-slate-200 print:text-black block">Inspector de Mantenimiento / NACE</span>
-              <span className="text-[10px] text-slate-400 print:text-gray-600">Firma y Aclaración en Terreno</span>
+              <span className="font-bold text-slate-200 print:text-black block">Responsable de Relevamiento en Planta</span>
+              <span className="text-[10px] text-slate-400 print:text-gray-600">Inspección y Verificación Operativa</span>
             </div>
             <div className="space-y-1">
               <div className="border-b border-slate-700 print:border-gray-400 h-12 w-48 mx-auto" />
-              <span className="font-bold text-slate-200 print:text-black block">Ingeniero de Integridad Estructural</span>
-              <span className="text-[10px] text-slate-400 print:text-gray-600">Validación Técnica y Presupuestaria</span>
+              <span className="font-bold text-slate-200 print:text-black block">Ingeniería de Mantenimiento e Integridad</span>
+              <span className="text-[10px] text-slate-400 print:text-gray-600">Aprobación de Alcance y Presupuesto</span>
             </div>
           </div>
         </div>

@@ -91,6 +91,17 @@ export default function PlanosIngenieriaPage() {
     let loadedHitos = await db.hitos.toArray();
     let loadedInspecciones = await db.inspecciones.toArray();
 
+    // Purgar áreas semilla ficticias (131, 411, 471) que no tengan ningún plano vinculado
+    if (loadedPlanos.length > 0) {
+      const usedAreaIds = new Set(loadedPlanos.map(p => p.area_id));
+      for (const a of loadedAreas) {
+        if (!usedAreaIds.has(a.id) && ['131', '411', '471'].includes(a.codigo)) {
+          await db.areas.delete(a.id);
+        }
+      }
+      loadedAreas = await db.areas.toArray();
+    }
+
     // Si el almacenamiento local del dispositivo está vacío, hidratar desde Neon Cloud
     if (loadedPlanos.length === 0) {
       try {
