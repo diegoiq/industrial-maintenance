@@ -402,7 +402,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
                         {insp.fotos.map((f, idx) => (
                           <div key={f.id || idx} className="bg-slate-950 print:bg-white rounded-lg overflow-hidden border border-slate-800 print:border-gray-300">
                             <img
-                              src={f.thumbnail_data_url || f.storage_url}
+                              src={f.storage_url || f.thumbnail_data_url}
                               alt={`Foto ${idx + 1}`}
                               className="w-full h-28 object-cover"
                             />

@@ -318,6 +318,8 @@ export async function POST(req: NextRequest) {
       }
 
       const safeSvgContent = p.svg_content ? sanitizeSvgContent(p.svg_content) : null;
+      // Si la imagen del plano ya está respaldada en Backblaze B2, no duplicar megabytes en Neon
+      const storedDataUrl = b2Url ? null : (p.archivo_data_url || null);
 
       await sql`
         INSERT INTO public.planos (
@@ -330,7 +332,7 @@ export async function POST(req: NextRequest) {
           ${p.titulo},
           ${b2Url},
           ${safeSvgContent},
-          ${p.archivo_data_url || null},
+          ${storedDataUrl},
           ${p.rotacion || 0},
           ${p.tipo_plano || 'area_detalle'},
           ${JSON.stringify(p.dimensiones_viewbox || { width: 1600, height: 900 })},
@@ -499,10 +501,15 @@ export async function POST(req: NextRequest) {
               console.warn('Error subiendo foto de inspección a B2:', e);
             }
           }
+          // Una vez confirmada la foto HD en Backblaze B2, en Neon guardamos solo la URL + micro-miniatura (~15 KB)
+          const lightweightThumb = storageUrl
+            ? (f.micro_thumbnail_data_url || (f.thumbnail_data_url && f.thumbnail_data_url.length < 35000 ? f.thumbnail_data_url : ''))
+            : f.thumbnail_data_url;
+
           processedFotos.push({
             id: f.id || `foto_${idx + 1}`,
             storage_url: storageUrl,
-            thumbnail_data_url: f.thumbnail_data_url,
+            thumbnail_data_url: lightweightThumb,
             peso_bytes: f.peso_bytes || 0,
             comentario: f.comentario || '',
             anotaciones_canvas: f.anotaciones_canvas || []

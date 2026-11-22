@@ -159,6 +159,7 @@ export interface FotoInspeccionLocal {
   id?: string;
   storage_url?: string;
   thumbnail_data_url: string;
+  micro_thumbnail_data_url?: string;
   original_webp_blob?: Blob;
   peso_bytes: number;
   comentario?: string;

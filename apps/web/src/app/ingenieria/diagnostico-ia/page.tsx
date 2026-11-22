@@ -73,7 +73,7 @@ export default function DiagnosticoIAPage() {
     ? inspecciones.filter(i => i.zona_id === currentZona.id || i.elemento_id === `ZONA:${currentZona.codigo}`)
     : inspecciones;
   const activeInspeccion = inspeccionesDeZona.find(i => i.id === selectedInspeccionId) || inspeccionesDeZona[0];
-  const activePhotoUrl = customTestPhoto || activeInspeccion?.fotos?.[0]?.thumbnail_data_url || activeInspeccion?.fotos?.[0]?.storage_url || null;
+  const activePhotoUrl = customTestPhoto || activeInspeccion?.fotos?.[0]?.storage_url || activeInspeccion?.fotos?.[0]?.thumbnail_data_url || null;
 
   // Subir una foto desde la PC para probar el diagnóstico IA en gabinete
   const handleUploadDesktopPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {

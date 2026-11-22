@@ -53,6 +53,7 @@ export const config = {
     '/',
     '/campo/:path*',
     '/ingenieria/:path*',
-    '/api/sync-neon/:path*'
+    '/api/sync-neon/:path*',
+    '/api/media/:path*'
   ]
 };

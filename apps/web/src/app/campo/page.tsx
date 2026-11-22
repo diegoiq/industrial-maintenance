@@ -540,6 +540,7 @@ export default function CampoPage() {
         nuevasFotos.push({
           id: `foto_${Date.now()}_${i}`,
           thumbnail_data_url: result.dataUrl,
+          micro_thumbnail_data_url: result.thumbnailDataUrl,
           original_webp_blob: result.blob,
           peso_bytes: result.compressedSizeBytes,
           comentario: '',

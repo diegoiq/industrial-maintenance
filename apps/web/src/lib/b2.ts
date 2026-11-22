@@ -1,4 +1,5 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const endpoint = process.env.B2_ENDPOINT || 'https://s3.us-east-005.backblazeb2.com';
 const region = process.env.B2_REGION || 'us-east-005';
@@ -29,6 +30,15 @@ export async function uploadToB2(
 
   await b2Client.send(command);
 
-  // Endpoint format for public/friendly URL or S3 URL
-  return `${endpoint}/${BUCKET_NAME}/${key}`;
+  // Servir mediante proxy autenticado /api/media para que funcione aunque el bucket B2 sea privado
+  return `/api/media?key=${encodeURIComponent(key)}`;
+}
+
+export async function getSignedB2Url(key: string, expiresInSeconds = 3600): Promise<string> {
+  const command = new GetObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: key,
+  });
+
+  return getSignedUrl(b2Client, command, { expiresIn: expiresInSeconds });
 }
