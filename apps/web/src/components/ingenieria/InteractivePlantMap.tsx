@@ -38,7 +38,8 @@ import {
   getSatelliteTilesForPlan, 
   calibrateFromTwoPoints,
   calibrateFromDistance,
-  getMetersPerDegree
+  getMetersPerDegree,
+  relocatePivotPreservingAlignment
 } from '../../lib/georeferenceEngine';
 import { db } from '../../lib/db';
 
@@ -109,6 +110,12 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
   const [isMeasuringScale, setIsMeasuringScale] = useState<boolean>(false);
   const [scalePoints, setScalePoints] = useState<{ x: number; y: number }[]>([]);
   const [knownMetersInput, setKnownMetersInput] = useState<string>('100');
+
+  // Controles de precisión quirúrgica: Fijar Pivote, Paso de Movimiento y Arrastre de Satélite
+  const [isSettingPivot, setIsSettingPivot] = useState<boolean>(false);
+  const [nudgeStepM, setNudgeStepM] = useState<number>(2);
+  const [isDragSatelliteMode, setIsDragSatelliteMode] = useState<boolean>(false);
+  const [satDragOrigin, setSatDragOrigin] = useState<{ x: number; y: number; lat: number; lng: number } | null>(null);
 
   const [isZenMode, setIsZenMode] = useState(false);
   const [resolvedImageUrl, setResolvedImageUrl] = useState<string | null>(plano?.archivo_data_url || plano?.archivo_original_url || null);
@@ -320,6 +327,13 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     const coords = getSvgCoordinates(e);
     if (!coords) return;
 
+    if (isSettingPivot) {
+      const updated = relocatePivotPreservingAlignment(coords.x, coords.y, geoCal);
+      setGeoCal(updated);
+      setIsSettingPivot(false);
+      return;
+    }
+
     if (isMeasuringScale) {
       setScalePoints(prev => (prev.length >= 2 ? [coords] : [...prev, coords]));
       return;
@@ -333,6 +347,18 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
     if (activeMode === 'add_zone') {
       setDrawingPoints(prev => [...prev, coords]);
     }
+  };
+
+  const handleSvgMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!isDragSatelliteMode || !showSatellite) return;
+    const coords = getSvgCoordinates(e);
+    if (!coords) return;
+    setSatDragOrigin({
+      x: coords.x,
+      y: coords.y,
+      lat: geoCal.anchorLat,
+      lng: geoCal.anchorLng
+    });
   };
 
   // Finalizar el trazado de nueva zona
@@ -362,6 +388,28 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
       setCursorGps({ ...gps, x: coords.x, y: coords.y });
     }
 
+    // Arrastre directo de la capa satelital con el mouse
+    if (isDragSatelliteMode && satDragOrigin && coords) {
+      const dxPx = (coords.x - satDragOrigin.x) * (geoCal.scaleRatioX || 1);
+      const dyPx = coords.y - satDragOrigin.y;
+      const theta = ((geoCal.rotationDeg || 0) * Math.PI) / 180;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+
+      const eastUnrotatedM = dxPx * geoCal.metersPerPixel;
+      const northUnrotatedM = -dyPx * geoCal.metersPerPixel;
+      const eastM = eastUnrotatedM * cosT + northUnrotatedM * sinT;
+      const northM = -eastUnrotatedM * sinT + northUnrotatedM * cosT;
+
+      const { metersPerDegLat, metersPerDegLng } = getMetersPerDegree(satDragOrigin.lat);
+      setGeoCal(prev => ({
+        ...prev,
+        anchorLat: Number((satDragOrigin.lat - northM / metersPerDegLat).toFixed(6)),
+        anchorLng: Number((satDragOrigin.lng - eastM / metersPerDegLng).toFixed(6))
+      }));
+      return;
+    }
+
     if (draggingVertexIdx === null || !coords) return;
 
     setLocalPoints(prev => {
@@ -372,6 +420,9 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
   };
 
   const handleSvgMouseUp = () => {
+    if (satDragOrigin) {
+      setSatDragOrigin(null);
+    }
     if (draggingVertexIdx !== null && selectedZonaId && onUpdateZonePolygon) {
       onUpdateZonePolygon(selectedZonaId, localPoints);
     }
@@ -692,13 +743,30 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         </button>
       </div>
 
+      {/* Indicador de Fijación de Punto Pivote de Rotación y Escala */}
+      {isSettingPivot && (
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-2 bg-amber-950/95 backdrop-blur-md px-4 py-2 rounded-full border border-amber-400 shadow-2xl text-xs text-white animate-pulse">
+          <Crosshair className="w-4 h-4 text-amber-400" />
+          <span className="font-bold">
+            📌 Haz clic en el punto que ya tengas alineado (ej. centro del Clarificador) para fijarlo como Pivote de Giro y Escala
+          </span>
+          <button
+            type="button"
+            onClick={() => setIsSettingPivot(false)}
+            className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full text-[10px]"
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
+
       {/* PANEL FLOTANTE DE CALIBRACIÓN VISUAL MAPS ("PAPEL CALCO SATELITAL") */}
       {showSatellite && isCalibratingMaps && (
-        <div className="absolute top-14 left-2 z-30 w-80 bg-slate-900/95 backdrop-blur-md border border-emerald-500/70 rounded-xl shadow-2xl p-3.5 space-y-3 text-xs text-slate-200">
+        <div className="absolute top-14 left-2 z-30 w-84 sm:w-[340px] max-h-[82vh] overflow-y-auto bg-slate-900/95 backdrop-blur-md border border-emerald-500/70 rounded-xl shadow-2xl p-3.5 space-y-3 text-xs text-slate-200">
           <div className="flex items-center justify-between border-b border-slate-800 pb-2">
             <div className="flex items-center space-x-1.5 font-bold text-emerald-400">
               <Globe className="w-4 h-4" />
-              <span>Encaje Manual Lay Out / Maps</span>
+              <span>Encaje Quirúrgico Lay Out / Maps</span>
             </div>
             <div className="flex items-center space-x-1">
               <button
@@ -711,7 +779,11 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setIsCalibratingMaps(false)}
+                onClick={() => {
+                  setIsCalibratingMaps(false);
+                  setIsDragSatelliteMode(false);
+                  setIsSettingPivot(false);
+                }}
                 className="px-1.5 py-0.5 text-slate-400 hover:text-white"
               >
                 ✕
@@ -734,7 +806,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
               onChange={(e) => setCadOpacity(parseFloat(e.target.value))}
               className="w-full accent-sky-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
             />
-            <label className="flex items-center space-x-2 pt-1 cursor-pointer text-[11px] text-slate-300">
+            <label className="flex items-center space-x-2 pt-0.5 cursor-pointer text-[11px] text-slate-300">
               <input
                 type="checkbox"
                 checked={invertCadLines}
@@ -745,20 +817,72 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
             </label>
           </div>
 
-          {/* 2. Desplazamiento Manual (N/S/E/O) y Coordenada Ancla */}
+          {/* 2. Punto Pivote y Posición Satélite (N/S/E/O + Arrastre Mouse) */}
           <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase text-slate-400">Posición Satélite (Mover Mapa):</span>
-              {hitos.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleAutoSyncFromHitos}
-                  className="text-[10px] px-2 py-0.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700 rounded font-bold"
-                  title="Alinear automáticamente usando los Hitos GPS cargados en el plano"
-                >
-                  ⚡ Anclar a Hito {hitos[0].codigo}
-                </button>
-              )}
+            <div className="flex items-center justify-between gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSettingPivot(!isSettingPivot);
+                  setIsDragSatelliteMode(false);
+                }}
+                className={`flex-1 py-1 px-2 rounded font-bold text-[10px] border transition flex items-center justify-center space-x-1 ${
+                  isSettingPivot
+                    ? 'bg-amber-500 text-black border-amber-400'
+                    : 'bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border-amber-600/50'
+                }`}
+                title="Haz clic en un punto ya alineado (ej. centro del Clarificador) para que el giro y la escala roten alrededor de él sin moverlo"
+              >
+                <Crosshair className="w-3 h-3" />
+                <span>{isSettingPivot ? 'Clic en Plano...' : '📌 Fijar Pivote Giro'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDragSatelliteMode(!isDragSatelliteMode);
+                  setIsSettingPivot(false);
+                }}
+                className={`flex-1 py-1 px-2 rounded font-bold text-[10px] border transition flex items-center justify-center space-x-1 ${
+                  isDragSatelliteMode
+                    ? 'bg-emerald-500 text-black border-emerald-400'
+                    : 'bg-slate-900 hover:bg-slate-800 text-emerald-300 border-slate-700'
+                }`}
+                title="Permite arrastrar la imagen satelital directamente con el mouse"
+              >
+                <span>{isDragSatelliteMode ? '✋ Arrastrando Maps' : '✋ Mover con Mouse'}</span>
+              </button>
+            </div>
+
+            {/* Selector de Paso de Flechas (0.5m, 2m, 10m) */}
+            <div className="flex items-center justify-between text-[10px]">
+              <span className="text-slate-400 uppercase font-bold">Paso de Flechas:</span>
+              <div className="flex items-center space-x-1">
+                {[0.5, 2, 10].map(stepVal => (
+                  <button
+                    key={stepVal}
+                    type="button"
+                    onClick={() => setNudgeStepM(stepVal)}
+                    className={`px-2 py-0.5 rounded font-mono font-bold ${
+                      nudgeStepM === stepVal
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    {stepVal}m
+                  </button>
+                ))}
+                {hitos.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleAutoSyncFromHitos}
+                    className="px-1.5 py-0.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700 rounded font-bold"
+                    title="Anclar al Hito GPS"
+                  >
+                    ⚡ {hitos[0].codigo}
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="flex items-center justify-between gap-2">
@@ -766,34 +890,34 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                 <div />
                 <button
                   type="button"
-                  onClick={() => handleNudgeMeters(-8, 0)}
+                  onClick={() => handleNudgeMeters(-nudgeStepM, 0)}
                   className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
-                  title="Mover plano al Norte"
+                  title={`Mover ${nudgeStepM}m al Norte`}
                 >
                   <ArrowUp className="w-3.5 h-3.5" />
                 </button>
                 <div />
                 <button
                   type="button"
-                  onClick={() => handleNudgeMeters(0, -8)}
+                  onClick={() => handleNudgeMeters(0, -nudgeStepM)}
                   className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
-                  title="Mover plano al Oeste"
+                  title={`Mover ${nudgeStepM}m al Oeste`}
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleNudgeMeters(8, 0)}
+                  onClick={() => handleNudgeMeters(nudgeStepM, 0)}
                   className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
-                  title="Mover plano al Sur"
+                  title={`Mover ${nudgeStepM}m al Sur`}
                 >
                   <ArrowDown className="w-3.5 h-3.5" />
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleNudgeMeters(0, 8)}
+                  onClick={() => handleNudgeMeters(0, nudgeStepM)}
                   className="p-1 bg-slate-800 hover:bg-slate-700 rounded flex justify-center text-emerald-400"
-                  title="Mover plano al Este"
+                  title={`Mover ${nudgeStepM}m al Este`}
                 >
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
@@ -802,7 +926,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
               <div className="flex-1 space-y-1">
                 <input
                   type="number"
-                  step="0.0001"
+                  step="0.00002"
                   value={geoCal.anchorLat}
                   onChange={(e) => setGeoCal(prev => ({ ...prev, anchorLat: parseFloat(e.target.value) || 0 }))}
                   className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-white"
@@ -810,7 +934,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                 />
                 <input
                   type="number"
-                  step="0.0001"
+                  step="0.00002"
                   value={geoCal.anchorLng}
                   onChange={(e) => setGeoCal(prev => ({ ...prev, anchorLng: parseFloat(e.target.value) || 0 }))}
                   className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-white"
@@ -820,20 +944,64 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
             </div>
           </div>
 
-          {/* 3. Escala (Metros por Píxel) y Regla de Distancia Conocida */}
-          <div className="space-y-1.5">
+          {/* 3. Escala Fina (m / píxel) + Proporción Horizontal X/Y */}
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 space-y-2">
             <div className="flex items-center justify-between text-[11px]">
-              <span className="text-slate-400">Escala (`m / píxel`):</span>
+              <span className="text-slate-400 font-bold">Escala (`m / píxel`):</span>
               <span className="font-mono font-bold text-amber-400">
-                {geoCal.metersPerPixel.toFixed(4)} m/px ({Math.round(vbWidth * geoCal.metersPerPixel)}m ancho)
+                {Math.round(vbWidth * geoCal.metersPerPixel)}m × {Math.round(vbHeight * geoCal.metersPerPixel)}m
               </span>
             </div>
+
+            {/* Botones de Ajuste Fino de Escala + Input Numérico */}
+            <div className="flex items-center justify-between gap-1">
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, metersPerPixel: Number(Math.max(0.005, prev.metersPerPixel * 0.995).toFixed(5)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-amber-300"
+                title="Reducir escala -0.5%"
+              >
+                -0.5%
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, metersPerPixel: Number(Math.max(0.005, prev.metersPerPixel - 0.0002).toFixed(5)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-amber-200"
+                title="Ajuste ultra-fino -0.0002 m/px"
+              >
+                -Fino
+              </button>
+              <input
+                type="number"
+                step="0.0001"
+                value={geoCal.metersPerPixel}
+                onChange={(e) => setGeoCal(prev => ({ ...prev, metersPerPixel: Math.max(0.001, parseFloat(e.target.value) || 0.1) }))}
+                className="w-20 bg-slate-900 border border-amber-500/40 rounded px-1.5 py-1 text-center font-mono font-bold text-[11px] text-amber-300"
+              />
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, metersPerPixel: Number((prev.metersPerPixel + 0.0002).toFixed(5)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-amber-200"
+                title="Ajuste ultra-fino +0.0002 m/px"
+              >
+                +Fino
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, metersPerPixel: Number((prev.metersPerPixel * 1.005).toFixed(5)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-amber-300"
+                title="Aumentar escala +0.5%"
+              >
+                +0.5%
+              </button>
+            </div>
+
             <div className="flex items-center space-x-2">
               <input
                 type="range"
-                min="0.01"
-                max="0.35"
-                step="0.001"
+                min="0.02"
+                max="0.40"
+                step="0.0002"
                 value={geoCal.metersPerPixel}
                 onChange={(e) => setGeoCal(prev => ({ ...prev, metersPerPixel: parseFloat(e.target.value) }))}
                 className="flex-1 accent-amber-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
@@ -841,38 +1009,134 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
               <button
                 type="button"
                 onClick={() => { setIsMeasuringScale(true); setScalePoints([]); }}
-                className="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded text-[10px] font-bold flex items-center space-x-1"
+                className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded text-[10px] font-bold flex items-center space-x-1"
                 title="Medir 2 puntos en el plano e ingresar su distancia en metros"
               >
                 <Ruler className="w-3 h-3" />
                 <span>Medir</span>
               </button>
             </div>
+
+            {/* Compensación fina de Proporción Horizontal X vs Vertical Y */}
+            <div className="pt-1 border-t border-slate-800/80 space-y-1">
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-slate-400">Proporción Ancho X / Alto Y:</span>
+                <div className="flex items-center space-x-1">
+                  <button
+                    type="button"
+                    onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) - 0.002).toFixed(4)) }))}
+                    className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-300"
+                  >
+                    -0.2%
+                  </button>
+                  <span className="font-mono font-bold text-sky-400">
+                    {(((geoCal.scaleRatioX || 1) * 100)).toFixed(1)}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) + 0.002).toFixed(4)) }))}
+                    className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-300"
+                  >
+                    +0.2%
+                  </button>
+                  {(geoCal.scaleRatioX || 1) !== 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: 1 }))}
+                      className="px-1 py-0.5 text-slate-400 hover:text-white"
+                    >
+                      100%
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
 
-          {/* 4. Rotación respecto al Norte */}
-          <div className="space-y-1">
+          {/* 4. Rotación Quirúrgica respecto al Norte (Paso 0.05° / 0.1°) */}
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 space-y-2">
             <div className="flex items-center justify-between text-[11px]">
-              <span className="text-slate-400">Rotación respecto al Norte:</span>
-              <span className="font-mono font-bold text-emerald-400">{geoCal.rotationDeg}°</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <input
-                type="range"
-                min="-180"
-                max="180"
-                step="0.5"
-                value={geoCal.rotationDeg}
-                onChange={(e) => setGeoCal(prev => ({ ...prev, rotationDeg: parseFloat(e.target.value) }))}
-                className="flex-1 accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-              />
+              <span className="text-slate-400 font-bold">Rotación Fina (Norte):</span>
               <button
                 type="button"
                 onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: 0 }))}
-                className="px-1.5 py-0.5 bg-slate-800 text-slate-400 hover:text-white rounded text-[10px] font-mono"
+                className="text-[10px] font-mono text-slate-400 hover:text-white underline"
               >
-                0°
+                Reset 0°
               </button>
+            </div>
+
+            {/* Botonera de Rotación Quirúrgica + Input directo */}
+            <div className="flex items-center justify-between gap-1">
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: Number((prev.rotationDeg - 1).toFixed(2)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-emerald-300"
+              >
+                -1°
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: Number((prev.rotationDeg - 0.1).toFixed(2)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-emerald-200 font-bold"
+              >
+                -0.1°
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: Number((prev.rotationDeg - 0.05).toFixed(2)) }))}
+                className="px-1 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[9px] text-emerald-200"
+              >
+                -.05°
+              </button>
+
+              <input
+                type="number"
+                step="0.05"
+                value={geoCal.rotationDeg}
+                onChange={(e) => setGeoCal(prev => ({ ...prev, rotationDeg: parseFloat(e.target.value) || 0 }))}
+                className="w-16 bg-slate-900 border border-emerald-500/40 rounded px-1 py-1 text-center font-mono font-bold text-[11px] text-emerald-400"
+              />
+
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: Number((prev.rotationDeg + 0.05).toFixed(2)) }))}
+                className="px-1 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[9px] text-emerald-200"
+              >
+                +.05°
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: Number((prev.rotationDeg + 0.1).toFixed(2)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-emerald-200 font-bold"
+              >
+                +0.1°
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeoCal(prev => ({ ...prev, rotationDeg: Number((prev.rotationDeg + 1).toFixed(2)) }))}
+                className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono text-[10px] text-emerald-300"
+              >
+                +1°
+              </button>
+            </div>
+
+            {/* Slider de Rango Fino (-15° a +15° con paso de 0.05°) */}
+            <div className="space-y-0.5">
+              <input
+                type="range"
+                min="-20"
+                max="20"
+                step="0.05"
+                value={Math.max(-20, Math.min(20, geoCal.rotationDeg))}
+                onChange={(e) => setGeoCal(prev => ({ ...prev, rotationDeg: parseFloat(e.target.value) }))}
+                className="w-full accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-500">
+                <span>-20°</span>
+                <span>Slider Fino (paso 0.05°)</span>
+                <span>+20°</span>
+              </div>
             </div>
           </div>
 
@@ -902,6 +1166,8 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
         disabled={
           activeMode !== 'inspect' ||
           isMeasuringScale ||
+          isSettingPivot ||
+          isDragSatelliteMode ||
           (isEditingPolygon && draggingVertexIdx !== null) ||
           drawingPoints.length > 0
         }
@@ -972,8 +1238,11 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
               <svg
                 ref={svgRef}
                 viewBox={`0 0 ${vbWidth} ${vbHeight}`}
-                className="w-full h-full max-h-screen object-contain"
+                className={`w-full h-full max-h-screen object-contain ${
+                  isSettingPivot ? 'cursor-crosshair' : isDragSatelliteMode ? 'cursor-move' : ''
+                }`}
                 onClick={handleSvgClick}
+                onMouseDown={handleSvgMouseDown}
                 onMouseMove={handleSvgMouseMove}
                 onMouseUp={handleSvgMouseUp}
               >
@@ -1038,6 +1307,23 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       style={showSatellite && !invertCadLines ? { mixBlendMode: 'multiply' } : undefined}
                     />
                   )
+                )}
+
+                {/* Marcador Visual del Punto Pivote de Rotación y Escala (Solo visible mientras se calibra Maps) */}
+                {showSatellite && isCalibratingMaps && (
+                  <g
+                    transform={`translate(${geoCal.anchorPixelX}, ${geoCal.anchorPixelY}) scale(${invZoom})`}
+                    className="pointer-events-none"
+                  >
+                    <circle r={12} fill="rgba(245, 158, 11, 0.18)" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3,2" />
+                    <line x1={-16} y1={0} x2={16} y2={0} stroke="#f59e0b" strokeWidth={1.3} />
+                    <line x1={0} y1={-16} x2={0} y2={16} stroke="#f59e0b" strokeWidth={1.3} />
+                    <circle r={3} fill="#f59e0b" stroke="#000" strokeWidth={1} />
+                    <rect x={10} y={-18} width={52} height={14} rx={3} fill="rgba(9, 13, 22, 0.9)" stroke="#f59e0b" strokeWidth={1} />
+                    <text x={36} y={-9} fill="#fcd34d" fontSize={8} fontFamily="monospace" fontWeight="bold" textAnchor="middle">
+                      ⊕ PIVOTE
+                    </text>
+                  </g>
                 )}
 
                 {/* Línea de Regla cuando se está midiendo distancia de calibración */}

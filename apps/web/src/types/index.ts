@@ -57,6 +57,7 @@ export interface PlanoGeoreferencia {
   anchorPixelX: number;
   anchorPixelY: number;
   metersPerPixel: number;
+  scaleRatioX?: number; // Compensación fina de proporción X vs Y (por defecto 1.0)
   rotationDeg: number;
   satelliteOpacity?: number;
   invertCadLines?: boolean;

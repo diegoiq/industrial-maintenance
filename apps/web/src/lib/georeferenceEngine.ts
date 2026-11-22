@@ -15,12 +15,13 @@ export function getMetersPerDegree(latDeg: number): { metersPerDegLat: number; m
 
 /**
  * Obtiene o inicializa una configuración de georreferencia para el plano.
- * Si el plano tiene al menos 2 hitos con coordenadas en el plano, calcula automáticamente
- * la escala y orientación; si tiene 1 hito (ej. G1), lo usa como ancla inicial.
  */
 export function getOrInitGeoreferencia(plano?: Plano, hitos: HitoGeografico[] = []): PlanoGeoreferencia {
   if (plano?.georeferencia) {
-    return plano.georeferencia;
+    return {
+      scaleRatioX: 1,
+      ...plano.georeferencia
+    };
   }
 
   const vbW = plano?.dimensiones_viewbox?.width || 7680;
@@ -51,22 +52,24 @@ export function getOrInitGeoreferencia(plano?: Plano, hitos: HitoGeografico[] = 
       anchorLng: h.lng,
       anchorPixelX: h.coordenadas_plano!.x,
       anchorPixelY: h.coordenadas_plano!.y,
-      metersPerPixel: 0.065, // Escala típica ~500m en 7680px
-      rotationDeg: 0,
-      satelliteOpacity: 0.65,
+      metersPerPixel: 0.216,
+      scaleRatioX: 1,
+      rotationDeg: 2.5,
+      satelliteOpacity: 0.75,
       invertCadLines: false
     };
   }
 
   // Default: Planta Celulosa Puerto Esperanza, Misiones
   return {
-    anchorLat: -25.98656,
-    anchorLng: -54.63950,
-    anchorPixelX: Math.round(vbW * 0.35),
-    anchorPixelY: Math.round(vbH * 0.55),
-    metersPerPixel: 0.065,
-    rotationDeg: 0,
-    satelliteOpacity: 0.65,
+    anchorLat: -25.989656,
+    anchorLng: -54.63806,
+    anchorPixelX: Math.round(vbW * 0.42),
+    anchorPixelY: Math.round(vbH * 0.48),
+    metersPerPixel: 0.216,
+    scaleRatioX: 1,
+    rotationDeg: 2.5,
+    satelliteOpacity: 0.75,
     invertCadLines: false
   };
 }
@@ -79,18 +82,17 @@ export function pixelToLatLng(
   y: number,
   cal: PlanoGeoreferencia
 ): { lat: number; lng: number } {
-  const dxPx = x - cal.anchorPixelX;
+  const ratioX = cal.scaleRatioX || 1;
+  const dxPx = (x - cal.anchorPixelX) * ratioX;
   const dyPx = y - cal.anchorPixelY; // En SVG +Y va hacia abajo (Sur)
 
   const theta = ((cal.rotationDeg || 0) * Math.PI) / 180;
   const cosT = Math.cos(theta);
   const sinT = Math.sin(theta);
 
-  // Vector en plano antes de rotar: Este = +dxPx, Norte = -dyPx
   const eastUnrotatedM = dxPx * cal.metersPerPixel;
   const northUnrotatedM = -dyPx * cal.metersPerPixel;
 
-  // Rotación horaria respecto al Norte geográfico
   const eastM = eastUnrotatedM * cosT + northUnrotatedM * sinT;
   const northM = -eastUnrotatedM * sinT + northUnrotatedM * cosT;
 
@@ -119,17 +121,36 @@ export function latLngToPixel(
   const cosT = Math.cos(theta);
   const sinT = Math.sin(theta);
 
-  // Rotación inversa
   const eastUnrotatedM = eastM * cosT - northM * sinT;
   const northUnrotatedM = eastM * sinT + northM * cosT;
 
   const scale = Math.max(0.0001, cal.metersPerPixel);
-  const dxPx = eastUnrotatedM / scale;
+  const ratioX = cal.scaleRatioX || 1;
+  const dxPx = eastUnrotatedM / (scale * ratioX);
   const dyPx = -northUnrotatedM / scale;
 
   return {
     x: Math.round(cal.anchorPixelX + dxPx),
     y: Math.round(cal.anchorPixelY + dyPx)
+  };
+}
+
+/**
+ * Cambia el punto pivote (anchorPixelX, anchorPixelY) a un nuevo punto del plano (ej. centro de un clarificador)
+ * recalculando su (anchorLat, anchorLng) para que el mapa satelital NO salte ni se desplace al fijar el nuevo pivote.
+ */
+export function relocatePivotPreservingAlignment(
+  newPixelX: number,
+  newPixelY: number,
+  currentCal: PlanoGeoreferencia
+): PlanoGeoreferencia {
+  const gpsAtNewPivot = pixelToLatLng(newPixelX, newPixelY, currentCal);
+  return {
+    ...currentCal,
+    anchorPixelX: Math.round(newPixelX),
+    anchorPixelY: Math.round(newPixelY),
+    anchorLat: gpsAtNewPivot.lat,
+    anchorLng: gpsAtNewPivot.lng
   };
 }
 
@@ -150,9 +171,8 @@ export function calibrateFromTwoPoints(
   const dyPx = p2.y - p1.y;
   const pixelDist = Math.hypot(dxPx, dyPx);
 
-  const metersPerPixel = pixelDist > 1 && realDistM > 0.5 ? Number((realDistM / pixelDist).toFixed(5)) : 0.065;
+  const metersPerPixel = pixelDist > 1 && realDistM > 0.5 ? Number((realDistM / pixelDist).toFixed(5)) : 0.216;
 
-  // Ángulo en el plano (Este = +dx, Norte = -dy) vs Ángulo geográfico real
   const anglePlanRad = Math.atan2(dxPx, -dyPx);
   const angleGeoRad = Math.atan2(dEastM, dNorthM);
   let rotationDeg = ((angleGeoRad - anglePlanRad) * 180) / Math.PI;
@@ -165,8 +185,9 @@ export function calibrateFromTwoPoints(
     anchorPixelX: p1.x,
     anchorPixelY: p1.y,
     metersPerPixel,
+    scaleRatioX: 1,
     rotationDeg: Number(rotationDeg.toFixed(2)),
-    satelliteOpacity: 0.65,
+    satelliteOpacity: 0.75,
     invertCadLines: false
   };
 }
@@ -188,9 +209,6 @@ export function calibrateFromDistance(
   };
 }
 
-/**
- * Calcula el centroide (x, y) de un polígono
- */
 export function getPolygonCentroid(puntos: { x: number; y: number }[]): { x: number; y: number } {
   if (!puntos || puntos.length === 0) return { x: 0, y: 0 };
   const sum = puntos.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
@@ -200,9 +218,6 @@ export function getPolygonCentroid(puntos: { x: number; y: number }[]): { x: num
   };
 }
 
-/**
- * Calcula el área real en m² de un polígono de zona usando la fórmula de Gauss (Shoelace) y la escala georreferenciada
- */
 export function calculatePolygonAreaM2(
   puntos: { x: number; y: number }[],
   cal?: PlanoGeoreferencia
@@ -215,30 +230,26 @@ export function calculatePolygonAreaM2(
     areaPx2 -= puntos[j].x * puntos[i].y;
   }
   areaPx2 = Math.abs(areaPx2) / 2;
-  const scale = cal?.metersPerPixel || 0.065;
-  return Math.round(areaPx2 * scale * scale * 10) / 10;
+  const scale = cal?.metersPerPixel || 0.216;
+  const ratioX = cal?.scaleRatioX || 1;
+  return Math.round(areaPx2 * scale * scale * ratioX * 10) / 10;
 }
 
-/**
- * Calcula el perímetro real en metros de un polígono
- */
 export function calculatePolygonPerimeterM(
   puntos: { x: number; y: number }[],
   cal?: PlanoGeoreferencia
 ): number {
   if (!puntos || puntos.length < 2) return 0;
   let perimPx = 0;
+  const ratioX = cal?.scaleRatioX || 1;
   for (let i = 0; i < puntos.length; i++) {
     const j = (i + 1) % puntos.length;
-    perimPx += Math.hypot(puntos[j].x - puntos[i].x, puntos[j].y - puntos[i].y);
+    perimPx += Math.hypot((puntos[j].x - puntos[i].x) * ratioX, puntos[j].y - puntos[i].y);
   }
-  const scale = cal?.metersPerPixel || 0.065;
+  const scale = cal?.metersPerPixel || 0.216;
   return Math.round(perimPx * scale * 10) / 10;
 }
 
-/**
- * Determina si un punto (x, y) en el plano cae dentro del polígono de una Zona (Ray-Casting)
- */
 export function isPointInPolygon(
   pt: { x: number; y: number },
   polygon: { x: number; y: number }[]
@@ -255,12 +266,6 @@ export function isPointInPolygon(
   return inside;
 }
 
-/**
- * Genera una grilla de tiles satelitales Web Mercator (Esri World Imagery / Google Hybrid)
- * proyectada exactamente en coordenadas de píxeles del ViewBox del plano CAD.
- * Esto permite renderizar el mapa satelital real DENTRO del mismo SVG como capa inferior,
- * acompañando el Pan & Zoom de 1x a 40x sin ningún desfasaje!
- */
 export interface SatelliteTileQuad {
   key: string;
   url: string;
@@ -276,8 +281,9 @@ export function getSatelliteTilesForPlan(
   cal: PlanoGeoreferencia,
   tileSource: 'esri' | 'osm' = 'esri'
 ): { tiles: SatelliteTileQuad[]; rotationDeg: number; anchorX: number; anchorY: number } {
-  // Calculamos el zoom satelital óptimo según metersPerPixel (en lat ~26°, z=18 es ~0.53m/px, z=19 es ~0.26m/px)
-  const z = 18;
+  // Seleccionar nivel de zoom satelital óptimo para que cubra todo el plano con alta nitidez
+  const plantWidthMeters = vbWidth * cal.metersPerPixel;
+  const z = plantWidthMeters > 1100 ? 17 : 18;
   const n = Math.pow(2, z);
 
   const latLngToTileFloat = (lat: number, lng: number) => {
@@ -294,10 +300,10 @@ export function getSatelliteTilesForPlan(
     return { lat, lng };
   };
 
-  // Calculamos en un sistema sin rotación alrededor del anchor para proyectar los tiles ortogonales
+  // Cubrir desde -35% hasta +135% del ViewBox para que al rotar o mover nunca quede borde blanco sin satélite
   const unrotatedCal: PlanoGeoreferencia = { ...cal, rotationDeg: 0 };
-  const topLeftGps = pixelToLatLng(-vbWidth * 0.25, -vbHeight * 0.25, unrotatedCal);
-  const bottomRightGps = pixelToLatLng(vbWidth * 1.25, vbHeight * 1.25, unrotatedCal);
+  const topLeftGps = pixelToLatLng(-vbWidth * 0.35, -vbHeight * 0.35, unrotatedCal);
+  const bottomRightGps = pixelToLatLng(vbWidth * 1.35, vbHeight * 1.35, unrotatedCal);
 
   const tl = latLngToTileFloat(topLeftGps.lat, topLeftGps.lng);
   const br = latLngToTileFloat(bottomRightGps.lat, bottomRightGps.lng);
@@ -307,11 +313,11 @@ export function getSatelliteTilesForPlan(
   let minY = Math.floor(Math.min(tl.yTile, br.yTile));
   let maxY = Math.floor(Math.max(tl.yTile, br.yTile));
 
-  // Limitar a una grilla máxima de 7x7 tiles para carga instantánea
+  // Permitir hasta 11x11 tiles para cubrir 100% de la hoja CAD de punta a punta
   const centerX = Math.floor((minX + maxX) / 2);
   const centerY = Math.floor((minY + maxY) / 2);
-  if (maxX - minX > 6) { minX = centerX - 3; maxX = centerX + 3; }
-  if (maxY - minY > 6) { minY = centerY - 3; maxY = centerY + 3; }
+  if (maxX - minX > 10) { minX = centerX - 5; maxX = centerX + 5; }
+  if (maxY - minY > 10) { minY = centerY - 5; maxY = centerY + 5; }
 
   const tiles: SatelliteTileQuad[] = [];
   for (let tx = minX; tx <= maxX; tx++) {
@@ -330,8 +336,8 @@ export function getSatelliteTilesForPlan(
         url,
         x: nwPx.x,
         y: nwPx.y,
-        width: Math.max(1, sePx.x - nwPx.x + 0.8),
-        height: Math.max(1, sePx.y - nwPx.y + 0.8)
+        width: Math.max(1, sePx.x - nwPx.x + 1.2),
+        height: Math.max(1, sePx.y - nwPx.y + 1.2)
       });
     }
   }
