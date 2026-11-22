@@ -27,6 +27,7 @@ import {
   Image as ImageIcon
 } from 'lucide-react';
 import { db } from '../../lib/db';
+import { pullAndReconcileFromCloud, pushFastSyncToCloud } from '../../lib/cloudSync';
 import { compressInspectionPhoto } from '../../lib/imageCompression';
 import { syncManager } from '../../lib/syncManager';
 import { SyncStatusBadge } from '../../components/campo/SyncStatusBadge';
@@ -116,40 +117,20 @@ export default function CampoPage() {
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [inspeccionesLocales, setInspeccionesLocales] = useState<Inspeccion[]>([]);
 
-  // Cargar desde IndexedDB e hidratar automáticamente desde Neon Cloud
+  // Cargar desde IndexedDB y reconciliar instantáneamente desde Neon Cloud (eliminando zonas borradas en PC)
   const loadAndHydrateFieldData = async (forceCloudPull: boolean = false) => {
     setIsSyncingCloud(true);
     try {
-      let loadedAreas = await db.areas.toArray();
-      let loadedPlanos = await db.planos.toArray();
-      let loadedZonas = await db.zonas.toArray();
-      let loadedElementos = await db.elementos.toArray();
-      let loadedHitos = await db.hitos.toArray();
-      let loadedInspecciones = await db.inspecciones.toArray();
-
-      if (forceCloudPull || loadedZonas.length === 0 || loadedPlanos.length === 0) {
-        try {
-          const res = await fetch('/api/sync-neon');
-          const json = await res.json();
-          if (json.success && json.data) {
-            for (const a of (json.data.areas || [])) await db.areas.put(a);
-            for (const p of (json.data.planos || [])) await db.planos.put(p);
-            for (const z of (json.data.zonas || [])) await db.zonas.put(z);
-            for (const e of (json.data.elementos || [])) await db.elementos.put(e);
-            for (const h of (json.data.hitos || [])) await db.hitos.put(h);
-            for (const i of (json.data.inspecciones || [])) await db.inspecciones.put(i);
-
-            loadedAreas = await db.areas.toArray();
-            loadedPlanos = await db.planos.toArray();
-            loadedZonas = await db.zonas.toArray();
-            loadedElementos = await db.elementos.toArray();
-            loadedHitos = await db.hitos.toArray();
-            loadedInspecciones = await db.inspecciones.toArray();
-          }
-        } catch (err) {
-          console.warn('Operando en modo offline local:', err);
-        }
+      if (forceCloudPull) {
+        await pullAndReconcileFromCloud();
       }
+
+      const loadedAreas = await db.areas.toArray();
+      const loadedPlanos = await db.planos.toArray();
+      const loadedZonas = await db.zonas.toArray();
+      const loadedElementos = await db.elementos.toArray();
+      const loadedHitos = await db.hitos.toArray();
+      const loadedInspecciones = await db.inspecciones.toArray();
 
       setAreas(loadedAreas);
       setPlanos(loadedPlanos);
@@ -166,8 +147,13 @@ export default function CampoPage() {
         setSelectedAreaId(loadedAreas[0].id);
       }
 
-      if (loadedZonas.length > 0 && !selectedZona) {
-        handleSelectZonaForTour(loadedZonas[0], loadedElementos);
+      if (loadedZonas.length > 0) {
+        const stillExists = selectedZona && loadedZonas.some(z => z.id === selectedZona.id);
+        if (!stillExists) {
+          handleSelectZonaForTour(loadedZonas[0], loadedElementos);
+        }
+      } else {
+        setSelectedZona(null);
       }
     } finally {
       setIsSyncingCloud(false);
@@ -176,6 +162,22 @@ export default function CampoPage() {
 
   useEffect(() => {
     loadAndHydrateFieldData(true);
+
+    // Auto-reconciliar cada vez que el inspector vuelve a la pantalla del celular o cada 10s
+    const onFocus = () => loadAndHydrateFieldData(true);
+    window.addEventListener('focus', onFocus);
+    const interval = setInterval(() => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        pullAndReconcileFromCloud().then(ok => {
+          if (ok) loadAndHydrateFieldData(false);
+        });
+      }
+    }, 10000);
+
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      clearInterval(interval);
+    };
   }, []);
 
   const currentPlano = planos.find(p => p.id === selectedPlanoId) || planos[0];
@@ -202,40 +204,18 @@ export default function CampoPage() {
     }
   };
 
-  // Sincronización bidireccional manual con Neon + Backblaze B2
+  // Sincronización bidireccional rápida con Neon + Backblaze B2 (Primero descarga eliminaciones de PC, luego sube hallazgos de campo)
   const handleFullCloudSync = async () => {
     setIsSyncingCloud(true);
     setSyncMessage('');
     try {
-      // 1. Subir cambios locales pendientes
-      const allAreas = await db.areas.toArray();
-      const allPlanos = await db.planos.toArray();
-      const allZonas = await db.zonas.toArray();
-      const allElementos = await db.elementos.toArray();
-      const allHitos = await db.hitos.toArray();
-      const allInspecciones = await db.inspecciones.toArray();
-
-      if (allZonas.length > 0 || allInspecciones.length > 0) {
-        await fetch('/api/sync-neon', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            areas: allAreas,
-            planos: allPlanos,
-            zonas: allZonas,
-            elementos: allElementos,
-            hitos: allHitos,
-            inspecciones: allInspecciones
-          })
-        });
-      }
-
-      // 2. Descargar última versión de la nube
-      await loadAndHydrateFieldData(true);
+      await pullAndReconcileFromCloud();
+      await pushFastSyncToCloud({ authoritativeZonas: false, authoritativeHitos: false });
+      await loadAndHydrateFieldData(false);
       const zCount = await db.zonas.count();
       const iCount = await db.inspecciones.count();
-      setSyncMessage(`¡Sincronizado con Neon y Backblaze B2! (${zCount} zonas de planta y ${iCount} inspecciones disponibles offline en tu celular).`);
-      setTimeout(() => setSyncMessage(''), 5000);
+      setSyncMessage(`⚡ ¡Sincronizado en tiempo real! (${zCount} zonas activas y ${iCount} inspecciones espejadas con PC).`);
+      setTimeout(() => setSyncMessage(''), 4000);
     } catch (err: any) {
       setSyncMessage('Guardado en memoria local (IndexedDB). Se sincronizará cuando haya señal.');
       setTimeout(() => setSyncMessage(''), 4000);

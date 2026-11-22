@@ -5,10 +5,10 @@ import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico } fro
 
 export const dynamic = 'force-dynamic';
 
-/**
- * Asegura que las columnas de georreferencia, hitos y fotos multi-zona existan en Neon
- */
+let schemaEnsured = false;
+
 async function ensureExtendedSchema() {
+  if (schemaEnsured) return;
   await sql`ALTER TABLE public.planos ADD COLUMN IF NOT EXISTS georeferencia JSONB DEFAULT NULL`;
   await sql`ALTER TABLE public.zonas_inspeccion ADD COLUMN IF NOT EXISTS coordenadas_gps_override JSONB DEFAULT NULL`;
   await sql`ALTER TABLE public.elementos ADD COLUMN IF NOT EXISTS coordenadas_gps JSONB DEFAULT NULL`;
@@ -33,14 +33,24 @@ async function ensureExtendedSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
     )
   `;
+  schemaEnsured = true;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     await ensureExtendedSchema();
+    const isLight = req.nextUrl.searchParams.get('light') === '1';
 
     const areas = await sql`SELECT * FROM public.areas ORDER BY codigo`;
-    const planos = await sql`SELECT * FROM public.planos ORDER BY created_at DESC`;
+    const planos = isLight
+      ? await sql`
+          SELECT id, area_id, titulo, archivo_original_url, svg_url, rotacion, tipo_plano,
+                 dimensiones_viewbox, georeferencia, version, activo, created_at
+          FROM public.planos
+          ORDER BY created_at DESC
+        `
+      : await sql`SELECT * FROM public.planos ORDER BY created_at DESC`;
+
     const zonas = await sql`SELECT * FROM public.zonas_inspeccion ORDER BY codigo`;
     const elementos = await sql`SELECT * FROM public.elementos ORDER BY tag_codigo`;
     const hitos = await sql`SELECT * FROM public.hitos_geograficos ORDER BY created_at DESC`;
@@ -53,6 +63,7 @@ export async function GET() {
 
     return NextResponse.json({
       success: true,
+      light: isLight,
       data: {
         areas,
         planos,
@@ -75,6 +86,36 @@ export async function GET() {
   }
 }
 
+export async function DELETE(req: NextRequest) {
+  try {
+    await ensureExtendedSchema();
+    const body = await req.json();
+    const { type, id } = body;
+
+    if (!type || !id) {
+      return NextResponse.json({ success: false, error: 'Falta type o id' }, { status: 400 });
+    }
+
+    if (type === 'zona') {
+      await sql`DELETE FROM public.elementos WHERE zona_id = ${id}`;
+      await sql`DELETE FROM public.zonas_inspeccion WHERE id = ${id}`;
+    } else if (type === 'elemento') {
+      await sql`DELETE FROM public.elementos WHERE id = ${id}`;
+    } else if (type === 'hito') {
+      await sql`DELETE FROM public.hitos_geograficos WHERE id = ${id}`;
+    } else if (type === 'plano') {
+      await sql`DELETE FROM public.planos WHERE id = ${id}`;
+    } else if (type === 'area') {
+      await sql`DELETE FROM public.areas WHERE id = ${id}`;
+    }
+
+    return NextResponse.json({ success: true, deleted: { type, id } });
+  } catch (err: any) {
+    console.error('Error deleting in Neon:', err);
+    return NextResponse.json({ success: false, error: err?.message }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     await ensureExtendedSchema();
@@ -86,7 +127,9 @@ export async function POST(req: NextRequest) {
       zonas = [],
       elementos = [],
       hitos = [],
-      inspecciones = []
+      inspecciones = [],
+      authoritativeZonas = false,
+      authoritativeHitos = false
     }: {
       areas?: Area[];
       planos?: Plano[];
@@ -94,6 +137,8 @@ export async function POST(req: NextRequest) {
       elementos?: Elemento[];
       hitos?: HitoGeografico[];
       inspecciones?: Inspeccion[];
+      authoritativeZonas?: boolean;
+      authoritativeHitos?: boolean;
     } = body;
 
     let b2UploadsCount = 0;
@@ -112,11 +157,11 @@ export async function POST(req: NextRequest) {
       `;
     }
 
-    // 2. Planos (incluyendo calibración geodésica de Capa Maps)
+    // 2. Planos (Solo sube imagen a B2 si aún no tiene archivo_original_url en B2, evitando demoras en syncs frecuentes)
     for (const p of planos) {
       let b2Url = p.archivo_original_url || null;
 
-      if (p.archivo_data_url && p.archivo_data_url.startsWith('data:')) {
+      if (!b2Url && p.archivo_data_url && p.archivo_data_url.startsWith('data:')) {
         try {
           const match = p.archivo_data_url.match(/^data:(.*?);base64,(.*)$/);
           if (match) {
@@ -167,7 +212,17 @@ export async function POST(req: NextRequest) {
       `;
     }
 
-    // 3. Zonas
+    // 3. Zonas (Con reconciliación exacta: si authoritativeZonas === true, elimina en Neon las zonas borradas en PC)
+    if (authoritativeZonas) {
+      const currentNeonZonas = await sql`SELECT id FROM public.zonas_inspeccion`;
+      const incomingIds = new Set(zonas.map(z => z.id));
+      for (const row of currentNeonZonas) {
+        if (!incomingIds.has(row.id)) {
+          await sql`DELETE FROM public.zonas_inspeccion WHERE id = ${row.id}`;
+        }
+      }
+    }
+
     for (const z of zonas) {
       await sql`
         INSERT INTO public.zonas_inspeccion (
@@ -241,6 +296,16 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Hitos Geográficos (GPS)
+    if (authoritativeHitos) {
+      const currentNeonHitos = await sql`SELECT id FROM public.hitos_geograficos`;
+      const incomingHitoIds = new Set(hitos.map(h => h.id));
+      for (const row of currentNeonHitos) {
+        if (!incomingHitoIds.has(row.id)) {
+          await sql`DELETE FROM public.hitos_geograficos WHERE id = ${row.id}`;
+        }
+      }
+    }
+
     for (const h of hitos) {
       await sql`
         INSERT INTO public.hitos_geograficos (
@@ -345,7 +410,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: 'Sincronización con Neon y Backblaze B2 completada.',
+      message: 'Sincronización rápida con Neon y Backblaze B2 completada.',
       synced: {
         areas: areas.length,
         planos: planos.length,

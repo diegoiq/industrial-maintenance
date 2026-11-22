@@ -28,6 +28,7 @@ import { CreateHitoModal } from '../../../components/ingenieria/CreateHitoModal'
 import { ReporteRelevamientoModal } from '../../../components/campo/ReporteRelevamientoModal';
 import { HitosMapsModal } from '../../../components/ingenieria/HitosMapsModal';
 import { db } from '../../../lib/db';
+import { pushFastSyncToCloud, deleteFromCloud, pullAndReconcileFromCloud } from '../../../lib/cloudSync';
 import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico } from '../../../types';
 
 export default function PlanosIngenieriaPage() {
@@ -211,7 +212,8 @@ export default function PlanosIngenieriaPage() {
     if (selectedZona?.id === zonaId) {
       setSelectedZona(updated);
     }
-    setNotification(`Contorno de zona "${target.codigo}" actualizado.`);
+    pushFastSyncToCloud({ authoritativeZonas: true });
+    setNotification(`Contorno de zona "${target.codigo}" actualizado y sincronizado.`);
     setTimeout(() => setNotification(null), 3000);
   };
 
@@ -236,10 +238,12 @@ export default function PlanosIngenieriaPage() {
     if (window.confirm(`¿Seguro que deseas eliminar la Zona "${target.codigo} - ${target.nombre}"?`)) {
       await db.zonas.delete(zonaId);
       await db.elementos.where('zona_id').equals(zonaId).delete();
+      await deleteFromCloud('zona', zonaId);
+      await pushFastSyncToCloud({ authoritativeZonas: true });
       await reloadFromDB();
       setSelectedZona(undefined);
       setSelectedElemento(undefined);
-      setNotification(`Zona "${target.codigo}" eliminada.`);
+      setNotification(`Zona "${target.codigo}" eliminada en PC y Nube.`);
       setTimeout(() => setNotification(null), 3000);
     }
   };
@@ -256,7 +260,8 @@ export default function PlanosIngenieriaPage() {
     if (selectedZona?.id === updatedZone.id) {
       setSelectedZona(updatedZone);
     }
-    setNotification(`Zona "${updatedZone.codigo}" actualizada.`);
+    pushFastSyncToCloud({ authoritativeZonas: true });
+    setNotification(`Zona "${updatedZone.codigo}" actualizada y sincronizada.`);
     setTimeout(() => setNotification(null), 3000);
   };
 
@@ -321,29 +326,18 @@ export default function PlanosIngenieriaPage() {
   const handleSyncToCloud = async () => {
     try {
       setIsSyncingCloud(true);
-      const allAreas = await db.areas.toArray();
-      const allPlanos = await db.planos.toArray();
-      const allZonas = await db.zonas.toArray();
-      const allElementos = await db.elementos.toArray();
-      const allHitos = await db.hitos.toArray();
-      const allInspecciones = await db.inspecciones.toArray();
-
-      const res = await fetch('/api/sync-neon', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          areas: allAreas,
-          planos: allPlanos,
-          zonas: allZonas,
-          elementos: allElementos,
-          hitos: allHitos,
-          inspecciones: allInspecciones
-        })
+      const localPlanos = await db.planos.toArray();
+      const needsImageUpload = localPlanos.some(p => !p.archivo_original_url && !!p.archivo_data_url);
+      const data = await pushFastSyncToCloud({
+        includePlanImages: needsImageUpload,
+        authoritativeZonas: true,
+        authoritativeHitos: true
       });
+      await pullAndReconcileFromCloud();
+      await reloadFromDB();
 
-      const data = await res.json();
       if (data.success) {
-        setNotification(`¡Sincronizado con Neon y Backblaze B2! (${data.synced?.planos || 0} planos, ${data.synced?.zonas || 0} zonas, ${data.synced?.elementos || 0} activos respaldados).`);
+        setNotification(`⚡ ¡Sincronización Instantánea! (${data.synced?.zonas || 0} zonas exactas espejadas con Nube y Celular).`);
       } else {
         alert("Error en sincronización: " + (data.error || "Desconocido"));
       }
@@ -550,7 +544,10 @@ export default function PlanosIngenieriaPage() {
           }}
           onMapClick={handleMapClick}
           onOpenUploadModal={() => setIsUploadPlanModalOpen(true)}
-          onPlanUpdated={() => reloadFromDB()}
+          onPlanUpdated={() => {
+            reloadFromDB();
+            pushFastSyncToCloud({ authoritativeZonas: true });
+          }}
           onUpdateZonePolygon={handleUpdateZonePolygon}
           onPolygonCreated={handlePolygonCreated}
           isEditingPolygon={isEditingZonePolygon}
@@ -654,7 +651,8 @@ export default function PlanosIngenieriaPage() {
           setSelectedZona(newZone);
           setIsCreateZoneModalOpen(false);
           setCustomPolygonPoints(undefined);
-          setNotification(`Zona "${newZone.codigo}" creada.`);
+          pushFastSyncToCloud({ authoritativeZonas: true });
+          setNotification(`Zona "${newZone.codigo}" creada y sincronizada con la nube.`);
           setTimeout(() => setNotification(null), 3000);
         }}
       />
@@ -672,7 +670,8 @@ export default function PlanosIngenieriaPage() {
           setSelectedHito(newHito);
           setIsCreateHitoModalOpen(false);
           setPendingHitoCoords(null);
-          setNotification(`Hito Geográfico "${newHito.codigo}" georreferenciado en el plano.`);
+          pushFastSyncToCloud({ authoritativeHitos: true });
+          setNotification(`Hito Geográfico "${newHito.codigo}" georreferenciado y sincronizado.`);
           setTimeout(() => setNotification(null), 4000);
         }}
       />
