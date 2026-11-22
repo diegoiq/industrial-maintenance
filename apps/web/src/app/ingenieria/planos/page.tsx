@@ -327,17 +327,18 @@ export default function PlanosIngenieriaPage() {
   const handleSyncToCloud = async () => {
     try {
       setIsSyncingCloud(true);
-      const localPlanos = await db.planos.toArray();
-      const needsImageUpload = localPlanos.some(p => !p.archivo_original_url && !!p.archivo_data_url);
+      // 1. Primero enviamos sincronización rápida (~4 KB) de zonas, áreas, elementos, hitos y metadatos de planos
+      // para garantizar que nunca exceda el límite de 4.5 MB de Vercel Serverless ni se pierda ninguna zona nueva.
       const data = await pushFastSyncToCloud({
-        includePlanImages: needsImageUpload,
+        includePlanImages: false,
         authoritativeZonas: true,
         authoritativeHitos: true
       });
-      await pullAndReconcileFromCloud();
-      await reloadFromDB();
 
       if (data.success) {
+        // 2. Solo reconciliamos de vuelta si el push a Neon fue exitoso (evita borrar zonas locales no sincronizadas)
+        await pullAndReconcileFromCloud();
+        await reloadFromDB();
         setNotification(`⚡ ¡Sincronización Instantánea! (${data.synced?.zonas || 0} zonas exactas espejadas con Nube y Celular).`);
       } else {
         alert("Error en sincronización: " + (data.error || "Desconocido"));
@@ -603,7 +604,8 @@ export default function PlanosIngenieriaPage() {
           if (newArea) setSelectedAreaId(newArea.id);
           setSelectedPlanoId(newPlan.id);
           setIsUploadPlanModalOpen(false);
-          setNotification(`Plano "${newPlan.titulo}" cargado exitosamente.`);
+          pushFastSyncToCloud({ includePlanImages: true, authoritativeZonas: true });
+          setNotification(`Plano "${newPlan.titulo}" cargado y sincronizado.`);
           setTimeout(() => setNotification(null), 3000);
         }}
       />
@@ -615,6 +617,7 @@ export default function PlanosIngenieriaPage() {
         onPlanReplaced={(updated) => {
           reloadFromDB();
           setIsReplacePlanModalOpen(false);
+          pushFastSyncToCloud({ includePlanImages: true, authoritativeZonas: true });
           setNotification(`Archivo del plano actualizado a v${updated.version}.`);
           setTimeout(() => setNotification(null), 3000);
         }}

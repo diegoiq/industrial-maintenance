@@ -105,6 +105,9 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
       };
 
       await db.zonas.put(newZona);
+      setCodigo('');
+      setNombre('');
+      setErrorMessage(null);
       onZoneCreated(newZona);
       onClose();
     } catch (err: any) {

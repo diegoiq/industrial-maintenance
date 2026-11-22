@@ -61,6 +61,11 @@ async function ensureExtendedSchema() {
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS historial_recorrido_gps JSONB DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS evaluacion_civil JSONB DEFAULT NULL`;
     await sql`ALTER TABLE public.inspecciones ALTER COLUMN elemento_id DROP NOT NULL`;
+    await sql`ALTER TABLE public.inspecciones DROP CONSTRAINT IF EXISTS inspecciones_elemento_id_fkey`;
+    await sql`ALTER TABLE public.zonas_inspeccion DROP CONSTRAINT IF EXISTS uq_plano_zona`;
+    await sql`ALTER TABLE public.elementos DROP CONSTRAINT IF EXISTS uq_zona_tag`;
+    await sql`ALTER TABLE public.elementos DROP CONSTRAINT IF EXISTS elementos_zona_id_fkey`;
+    await sql`ALTER TABLE public.areas DROP CONSTRAINT IF EXISTS areas_codigo_key`;
 
     await sql`
       CREATE TABLE IF NOT EXISTS public.hitos_geograficos (

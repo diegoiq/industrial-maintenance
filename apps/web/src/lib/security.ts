@@ -68,18 +68,23 @@ export function validateBase64DataUrl(
   allowedMimePrefixes: string[],
   maxBytes: number
 ): { valid: boolean; mimeType: string; buffer: Buffer; error?: string } {
-  const match = dataUrl.match(/^data:([a-zA-Z0-9/+.-]+);base64,([A-Za-z0-9+/=\s]+)$/);
-  if (!match) {
+  if (!dataUrl || !dataUrl.startsWith('data:')) {
     return { valid: false, mimeType: '', buffer: Buffer.alloc(0), error: 'Formato Data URL inválido' };
   }
 
-  const mimeType = match[1].toLowerCase();
+  const base64MarkerIdx = dataUrl.indexOf(';base64,');
+  if (base64MarkerIdx === -1) {
+    return { valid: false, mimeType: '', buffer: Buffer.alloc(0), error: 'Data URL no contiene codificación base64' };
+  }
+
+  const mimeType = dataUrl.slice(5, base64MarkerIdx).trim().toLowerCase();
   const isAllowed = allowedMimePrefixes.some(allowed => mimeType === allowed || mimeType.startsWith(allowed));
   if (!isAllowed) {
     return { valid: false, mimeType, buffer: Buffer.alloc(0), error: `Tipo MIME no permitido: ${mimeType}` };
   }
 
-  const buffer = Buffer.from(match[2], 'base64');
+  const base64Payload = dataUrl.slice(base64MarkerIdx + 8);
+  const buffer = Buffer.from(base64Payload, 'base64');
   if (buffer.byteLength > maxBytes) {
     return {
       valid: false,
