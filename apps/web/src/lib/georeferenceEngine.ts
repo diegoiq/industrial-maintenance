@@ -82,8 +82,8 @@ export function pixelToLatLng(
   y: number,
   cal: PlanoGeoreferencia
 ): { lat: number; lng: number } {
-  const ratioX = cal.scaleRatioX || 1;
-  const dxPx = (x - cal.anchorPixelX) * ratioX;
+  // El Mapa Satelital es 100% isotrópico en coordenadas del ViewBox; la contracción/estiramiento visual se aplica directo al Lay Out CAD
+  const dxPx = x - cal.anchorPixelX;
   const dyPx = y - cal.anchorPixelY; // En SVG +Y va hacia abajo (Sur)
 
   const theta = ((cal.rotationDeg || 0) * Math.PI) / 180;
@@ -125,8 +125,7 @@ export function latLngToPixel(
   const northUnrotatedM = eastM * sinT + northM * cosT;
 
   const scale = Math.max(0.0001, cal.metersPerPixel);
-  const ratioX = cal.scaleRatioX || 1;
-  const dxPx = eastUnrotatedM / (scale * ratioX);
+  const dxPx = eastUnrotatedM / scale;
   const dyPx = -northUnrotatedM / scale;
 
   return {
@@ -300,8 +299,8 @@ export function getSatelliteTilesForPlan(
     return { lat, lng };
   };
 
-  // Cubrir desde -35% hasta +135% del ViewBox para que al rotar o mover nunca quede borde blanco sin satélite
-  const unrotatedCal: PlanoGeoreferencia = { ...cal, rotationDeg: 0 };
+  // Cubrir desde -35% hasta +135% del ViewBox usando escala 100% isotrópica (el Maps NUNCA se deforma)
+  const unrotatedCal: PlanoGeoreferencia = { ...cal, rotationDeg: 0, scaleRatioX: 1, scaleRatioY: 1 };
   const topLeftGps = pixelToLatLng(-vbWidth * 0.35, -vbHeight * 0.35, unrotatedCal);
   const bottomRightGps = pixelToLatLng(vbWidth * 1.35, vbHeight * 1.35, unrotatedCal);
 

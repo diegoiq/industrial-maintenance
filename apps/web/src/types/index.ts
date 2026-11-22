@@ -57,7 +57,8 @@ export interface PlanoGeoreferencia {
   anchorPixelX: number;
   anchorPixelY: number;
   metersPerPixel: number;
-  scaleRatioX?: number; // Compensación fina de proporción X vs Y (por defecto 1.0)
+  scaleRatioX?: number; // Factor de estiramiento/contracción Ancho X del Lay Out CAD alrededor del Pivote (1.0 = 100%)
+  scaleRatioY?: number; // Factor de estiramiento/contracción Alto Y del Lay Out CAD alrededor del Pivote (1.0 = 100%)
   rotationDeg: number;
   satelliteOpacity?: number;
   invertCadLines?: boolean;

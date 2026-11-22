@@ -404,6 +404,59 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
                   </button>
                 )}
               </div>
+
+              {/* Desplazamiento Local de toda la Zona en Bloque (Offset X / Y) */}
+              {onUpdateZoneData && (
+                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
+                  <span className="text-slate-400">Desplazar Zona en Bloque:</span>
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const shifted = (zona.poligono_svg?.puntos || []).map(p => ({ x: p.x - 8, y: p.y }));
+                        onUpdateZoneData({ ...zona, poligono_svg: { puntos: shifted } });
+                      }}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-sky-300 font-mono"
+                      title="Mover zona a la izquierda"
+                    >
+                      ◄ -X
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const shifted = (zona.poligono_svg?.puntos || []).map(p => ({ x: p.x + 8, y: p.y }));
+                        onUpdateZoneData({ ...zona, poligono_svg: { puntos: shifted } });
+                      }}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-sky-300 font-mono"
+                      title="Mover zona a la derecha"
+                    >
+                      +X ►
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const shifted = (zona.poligono_svg?.puntos || []).map(p => ({ x: p.x, y: p.y - 8 }));
+                        onUpdateZoneData({ ...zona, poligono_svg: { puntos: shifted } });
+                      }}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-sky-300 font-mono"
+                      title="Mover zona hacia arriba"
+                    >
+                      ▲ -Y
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const shifted = (zona.poligono_svg?.puntos || []).map(p => ({ x: p.x, y: p.y + 8 }));
+                        onUpdateZoneData({ ...zona, poligono_svg: { puntos: shifted } });
+                      }}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-sky-300 font-mono"
+                      title="Mover zona hacia abajo"
+                    >
+                      ▼ +Y
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Drill-down: Conectar Layout General con Plano de Detalle de Nave */}

@@ -1017,38 +1017,121 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
               </button>
             </div>
 
-            {/* Compensación fina de Proporción Horizontal X vs Vertical Y */}
-            <div className="pt-1 border-t border-slate-800/80 space-y-1">
+            {/* Contraer / Estirar Lay Out CAD desde el Pivote (Mantiene el Maps 100% rígido) */}
+            <div className="pt-1.5 border-t border-slate-800/80 space-y-2">
               <div className="flex items-center justify-between text-[10px]">
-                <span className="text-slate-400">Proporción Ancho X / Alto Y:</span>
-                <div className="flex items-center space-x-1">
+                <span className="text-sky-300 font-bold">Contraer / Estirar Lay Out CAD (sin tocar Maps):</span>
+                {((geoCal.scaleRatioX || 1) !== 1 || (geoCal.scaleRatioY || 1) !== 1) && (
                   <button
                     type="button"
-                    onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) - 0.002).toFixed(4)) }))}
-                    className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-300"
+                    onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: 1, scaleRatioY: 1 }))}
+                    className="text-[10px] text-slate-400 hover:text-white underline font-mono"
                   >
-                    -0.2%
+                    Reset 100%
                   </button>
-                  <span className="font-mono font-bold text-sky-400">
-                    {(((geoCal.scaleRatioX || 1) * 100)).toFixed(1)}%
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) + 0.002).toFixed(4)) }))}
-                    className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-300"
-                  >
-                    +0.2%
-                  </button>
-                  {(geoCal.scaleRatioX || 1) !== 1 && (
+                )}
+              </div>
+
+              {/* Control Ancho Horizontal X del CAD */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-slate-400">Ancho X del CAD:</span>
+                  <div className="flex items-center space-x-1">
                     <button
                       type="button"
-                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: 1 }))}
-                      className="px-1 py-0.5 text-slate-400 hover:text-white"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) - 0.005).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-300"
+                      title="Contraer Ancho X del Lay Out -0.5% hacia el Pivote"
                     >
-                      100%
+                      -0.5%
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) - 0.001).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-200 font-bold"
+                      title="Contraer Ancho X del Lay Out -0.1% hacia el Pivote"
+                    >
+                      -0.1%
+                    </button>
+                    <span className="font-mono font-bold text-sky-400 min-w-[44px] text-center">
+                      {(((geoCal.scaleRatioX || 1) * 100)).toFixed(1)}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) + 0.001).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-200 font-bold"
+                      title="Estirar Ancho X del Lay Out +0.1% desde el Pivote"
+                    >
+                      +0.1%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioX: Number(((prev.scaleRatioX || 1) + 0.005).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-sky-300"
+                      title="Estirar Ancho X del Lay Out +0.5% desde el Pivote"
+                    >
+                      +0.5%
+                    </button>
+                  </div>
                 </div>
+                <input
+                  type="range"
+                  min="0.85"
+                  max="1.15"
+                  step="0.001"
+                  value={geoCal.scaleRatioX || 1}
+                  onChange={(e) => setGeoCal(prev => ({ ...prev, scaleRatioX: parseFloat(e.target.value) }))}
+                  className="w-full accent-sky-500 h-1 bg-slate-800 rounded-lg cursor-pointer"
+                />
+              </div>
+
+              {/* Control Alto Vertical Y del CAD */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-slate-400">Alto Y del CAD:</span>
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioY: Number(((prev.scaleRatioY || 1) - 0.005).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-purple-300"
+                    >
+                      -0.5%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioY: Number(((prev.scaleRatioY || 1) - 0.001).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-purple-200 font-bold"
+                    >
+                      -0.1%
+                    </button>
+                    <span className="font-mono font-bold text-purple-400 min-w-[44px] text-center">
+                      {(((geoCal.scaleRatioY || 1) * 100)).toFixed(1)}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioY: Number(((prev.scaleRatioY || 1) + 0.001).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-purple-200 font-bold"
+                    >
+                      +0.1%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGeoCal(prev => ({ ...prev, scaleRatioY: Number(((prev.scaleRatioY || 1) + 0.005).toFixed(4)) }))}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded font-mono text-purple-300"
+                    >
+                      +0.5%
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0.85"
+                  max="1.15"
+                  step="0.001"
+                  value={geoCal.scaleRatioY || 1}
+                  onChange={(e) => setGeoCal(prev => ({ ...prev, scaleRatioY: parseFloat(e.target.value) }))}
+                  className="w-full accent-purple-500 h-1 bg-slate-800 rounded-lg cursor-pointer"
+                />
               </div>
             </div>
           </div>
@@ -1286,28 +1369,32 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                   </g>
                 )}
 
-                {/* RENDERIZADO DEL PLANO CARGADO (Vectorial Puro SVG o Raster) */}
-                {plano.svg_content ? (
-                  <g
-                    dangerouslySetInnerHTML={{ __html: plano.svg_content }}
-                    opacity={showSatellite ? cadOpacity : 1}
-                    filter={showSatellite && invertCadLines ? 'url(#invert-cad)' : undefined}
-                  />
-                ) : (
-                  (resolvedImageUrl || plano.archivo_data_url || plano.archivo_original_url) && (
-                    <image
-                      href={(resolvedImageUrl || plano.archivo_data_url || plano.archivo_original_url)!}
-                      x="0"
-                      y="0"
-                      width={vbWidth}
-                      height={vbHeight}
-                      preserveAspectRatio="xMidYMid meet"
-                      opacity={showSatellite ? cadOpacity : 0.96}
+                {/* RENDERIZADO DEL PLANO CARGADO (Transformado alrededor del Pivote sin deformar el Maps) */}
+                <g
+                  transform={`translate(${geoCal.anchorPixelX}, ${geoCal.anchorPixelY}) scale(${geoCal.scaleRatioX || 1}, ${geoCal.scaleRatioY || 1}) translate(${-geoCal.anchorPixelX}, ${-geoCal.anchorPixelY})`}
+                >
+                  {plano.svg_content ? (
+                    <g
+                      dangerouslySetInnerHTML={{ __html: plano.svg_content }}
+                      opacity={showSatellite ? cadOpacity : 1}
                       filter={showSatellite && invertCadLines ? 'url(#invert-cad)' : undefined}
-                      style={showSatellite && !invertCadLines ? { mixBlendMode: 'multiply' } : undefined}
                     />
-                  )
-                )}
+                  ) : (
+                    (resolvedImageUrl || plano.archivo_data_url || plano.archivo_original_url) && (
+                      <image
+                        href={(resolvedImageUrl || plano.archivo_data_url || plano.archivo_original_url)!}
+                        x="0"
+                        y="0"
+                        width={vbWidth}
+                        height={vbHeight}
+                        preserveAspectRatio="xMidYMid meet"
+                        opacity={showSatellite ? cadOpacity : 0.96}
+                        filter={showSatellite && invertCadLines ? 'url(#invert-cad)' : undefined}
+                        style={showSatellite && !invertCadLines ? { mixBlendMode: 'multiply' } : undefined}
+                      />
+                    )
+                  )}
+                </g>
 
                 {/* Marcador Visual del Punto Pivote de Rotación y Escala (Solo visible mientras se calibra Maps) */}
                 {showSatellite && isCalibratingMaps && (
