@@ -77,13 +77,16 @@ export default function PlanosIngenieriaPage() {
     item: any;
   } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setIsMenuOpen(false);
       }
-      setContextMenu(null);
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null);
+      }
     };
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -706,6 +709,7 @@ export default function PlanosIngenieriaPage() {
         {/* Menú Contextual de Clic Derecho sobre Pines, Hitos GPS y Zonas */}
         {contextMenu && (
           <div
+            ref={contextMenuRef}
             onMouseDown={(e) => e.stopPropagation()}
             style={{ left: contextMenu.x, top: contextMenu.y }}
             className="fixed z-50 w-60 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 text-xs text-slate-200 backdrop-blur-md"
