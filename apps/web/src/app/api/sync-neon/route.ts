@@ -63,6 +63,11 @@ async function ensureExtendedSchema() {
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS historial_recorrido_gps JSONB DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS evaluacion_civil JSONB DEFAULT NULL`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS inspector_nombre VARCHAR(120) DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS muestreo_tramo JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS antiguedad_anios INT DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS ultimo_revestimiento_anios INT DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS tasa_avance_anual_pct NUMERIC(6, 2) DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS meses_ventana_intervencion INT DEFAULT NULL`;
     await sql`ALTER TABLE public.elementos ALTER COLUMN tipo_elemento TYPE VARCHAR(80) USING tipo_elemento::text`;
     await sql`ALTER TABLE public.inspecciones ALTER COLUMN elemento_id DROP NOT NULL`;
     await sql`ALTER TABLE public.inspecciones DROP CONSTRAINT IF EXISTS inspecciones_elemento_id_fkey`;
@@ -196,6 +201,8 @@ export async function GET(req: NextRequest) {
 
     const inspecciones = rawInspecciones.map((row: any) => ({
       ...row,
+      porcentaje_afectado: row.porcentaje_afectado !== null && row.porcentaje_afectado !== undefined ? Number(row.porcentaje_afectado) : 0,
+      tasa_avance_anual_pct: row.tasa_avance_anual_pct !== null && row.tasa_avance_anual_pct !== undefined ? Number(row.tasa_avance_anual_pct) : undefined,
       fotos: Array.isArray(row.fotos_json) ? row.fotos_json : []
     }));
 
@@ -557,8 +564,10 @@ export async function POST(req: NextRequest) {
           id, elemento_id, zona_id, zona_codigo, inspector_id, inspector_nombre, fecha_inspeccion,
           estado_sincronizacion, clasificacion_sustrato, clasificacion_recubrimiento,
           grado_corrosion, requiere_reemplazo, porcentaje_afectado,
-          criticidad_calculada, observaciones, diagnostico_ia, fotos_json,
-          coordenadas_gps, historial_recorrido_gps, evaluacion_civil
+          criticidad_calculada, antiguedad_anios, ultimo_revestimiento_anios,
+          tasa_avance_anual_pct, meses_ventana_intervencion,
+          observaciones, diagnostico_ia, fotos_json,
+          coordenadas_gps, historial_recorrido_gps, evaluacion_civil, muestreo_tramo
         )
         VALUES (
           ${insp.id},
@@ -575,12 +584,17 @@ export async function POST(req: NextRequest) {
           ${insp.requiere_reemplazo || false},
           ${insp.porcentaje_afectado || 0},
           ${insp.criticidad_calculada || 3},
+          ${insp.antiguedad_anios ?? null},
+          ${insp.ultimo_revestimiento_anios ?? null},
+          ${insp.tasa_avance_anual_pct ?? null},
+          ${insp.meses_ventana_intervencion ?? null},
           ${insp.observaciones || null},
           ${insp.diagnostico_ia ? JSON.stringify(insp.diagnostico_ia) : null},
           ${JSON.stringify(processedFotos)},
           ${insp.coordenadas_gps ? JSON.stringify(insp.coordenadas_gps) : null},
           ${insp.historial_recorrido_gps ? JSON.stringify(insp.historial_recorrido_gps) : '[]'},
-          ${insp.evaluacion_civil ? JSON.stringify(insp.evaluacion_civil) : null}
+          ${insp.evaluacion_civil ? JSON.stringify(insp.evaluacion_civil) : null},
+          ${insp.muestreo_tramo ? JSON.stringify(insp.muestreo_tramo) : null}
         )
         ON CONFLICT (id) DO UPDATE SET
           estado_sincronizacion = 'sincronizado',
@@ -593,12 +607,17 @@ export async function POST(req: NextRequest) {
           requiere_reemplazo = EXCLUDED.requiere_reemplazo,
           porcentaje_afectado = EXCLUDED.porcentaje_afectado,
           criticidad_calculada = EXCLUDED.criticidad_calculada,
+          antiguedad_anios = COALESCE(EXCLUDED.antiguedad_anios, public.inspecciones.antiguedad_anios),
+          ultimo_revestimiento_anios = COALESCE(EXCLUDED.ultimo_revestimiento_anios, public.inspecciones.ultimo_revestimiento_anios),
+          tasa_avance_anual_pct = COALESCE(EXCLUDED.tasa_avance_anual_pct, public.inspecciones.tasa_avance_anual_pct),
+          meses_ventana_intervencion = COALESCE(EXCLUDED.meses_ventana_intervencion, public.inspecciones.meses_ventana_intervencion),
           observaciones = EXCLUDED.observaciones,
           diagnostico_ia = EXCLUDED.diagnostico_ia,
           fotos_json = EXCLUDED.fotos_json,
           coordenadas_gps = COALESCE(EXCLUDED.coordenadas_gps, public.inspecciones.coordenadas_gps),
           historial_recorrido_gps = COALESCE(EXCLUDED.historial_recorrido_gps, public.inspecciones.historial_recorrido_gps),
-          evaluacion_civil = COALESCE(EXCLUDED.evaluacion_civil, public.inspecciones.evaluacion_civil)
+          evaluacion_civil = COALESCE(EXCLUDED.evaluacion_civil, public.inspecciones.evaluacion_civil),
+          muestreo_tramo = COALESCE(EXCLUDED.muestreo_tramo, public.inspecciones.muestreo_tramo)
       `;
     }
 

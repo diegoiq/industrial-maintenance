@@ -385,6 +385,12 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
                       )}
                     </div>
 
+                    {insp.muestreo_tramo?.aplica && (
+                      <div className="p-2 bg-slate-950 print:bg-gray-100 rounded border border-sky-500/30 text-[11px] font-mono text-sky-200 print:text-black">
+                        Muestreo Tramo {insp.muestreo_tramo.longitud_tramo_m}m: {insp.muestreo_tramo.unidades_afectadas}/{insp.muestreo_tramo.unidades_totales} unid. ({insp.muestreo_tramo.extension_normalizada_pct}%) · Morfología: {insp.muestreo_tramo.morfologia_dominante.replace(/_/g, ' ')} · ISO 12944: {insp.muestreo_tramo.ambiente_iso12944} · Tasa: {insp.muestreo_tramo.tasa_calculada_pct_anio}%/año
+                      </div>
+                    )}
+
                     {insp.evaluacion_civil?.aplica && insp.evaluacion_civil.items?.length > 0 && (
                       <div className="p-2.5 bg-slate-950 print:bg-gray-200 rounded-lg border border-amber-500/30 space-y-1.5">
                         <span className="text-[10px] font-mono font-bold uppercase text-amber-400 print:text-amber-800 block">

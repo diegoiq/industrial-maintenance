@@ -124,6 +124,7 @@ export default function PresupuestosPlanMaestroPage() {
       m3Andamio,
       saludFallback: salud,
       ultimaInspeccion: ultimaInsp,
+      inspeccionesHistoricas: inspZona,
       tarifas
     });
 
@@ -174,7 +175,8 @@ export default function PresupuestosPlanMaestroPage() {
       const zonaPadre = zonas.find(z => z.id === el.zona_id);
       const plano = planos.find(p => p.id === zonaPadre?.plano_id);
       const area = areas.find(a => a.id === plano?.area_id);
-      const ultimaInsp = inspecciones.find(i => i.elemento_id === el.id);
+      const inspElem = inspecciones.filter(i => i.elemento_id === el.id);
+      const ultimaInsp = inspElem[0];
 
       const salud = ultimaInsp
         ? (ultimaInsp.requiere_reemplazo || ultimaInsp.grado_corrosion === 'Ri 5' ? 'critico' : ultimaInsp.grado_corrosion === 'Ri 4' ? 'malo' : ultimaInsp.grado_corrosion === 'Ri 3' ? 'regular' : 'bueno')
@@ -188,6 +190,7 @@ export default function PresupuestosPlanMaestroPage() {
         m3Andamio,
         saludFallback: salud,
         ultimaInspeccion: ultimaInsp,
+        inspeccionesHistoricas: inspElem,
         tarifas
       });
 

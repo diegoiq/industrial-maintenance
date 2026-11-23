@@ -167,6 +167,20 @@ export interface FotoInspeccionLocal {
   anotaciones_canvas: VectorAnnotation[];
 }
 
+export type MorfologiaCorrosiva = 'superficial' | 'activo_laminar' | 'picado_perdida_seccion';
+export type AmbienteISO12944 = 'C3' | 'C4' | 'C5' | 'CX';
+
+export interface MuestreoTramoTecnico {
+  aplica: boolean;
+  longitud_tramo_m: number;
+  unidades_totales: number;
+  unidades_afectadas: number;
+  extension_normalizada_pct: number;
+  morfologia_dominante: MorfologiaCorrosiva;
+  ambiente_iso12944: AmbienteISO12944;
+  tasa_calculada_pct_anio: number;
+}
+
 export interface Inspeccion {
   id: string;
   elemento_id: string;
@@ -200,6 +214,7 @@ export interface Inspeccion {
     items: EvaluacionCivilItem[];
     notas_civiles?: string;
   };
+  muestreo_tramo?: MuestreoTramoTecnico;
   observaciones?: string;
   diagnostico_ia?: any;
   fotos: FotoInspeccionLocal[];

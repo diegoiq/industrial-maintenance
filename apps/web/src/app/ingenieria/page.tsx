@@ -87,6 +87,7 @@ export default function IngenieriaDashboardPage() {
       m3Andamio: m3,
       saludFallback: salud,
       ultimaInspeccion: ultimaInsp,
+      inspeccionesHistoricas: inspZona,
       tarifas
     });
 

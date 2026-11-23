@@ -43,6 +43,7 @@ import {
 import { getSyncRequestHeaders, sanitizeSvgContent } from '../../lib/security';
 import { compressInspectionPhoto } from '../../lib/imageCompression';
 import { loadMaterialsCatalog, MaterialCatalogItem } from '../../lib/materialsCatalog';
+import { calcularMuestreoTramo } from '../../lib/degradationModel';
 import { syncManager } from '../../lib/syncManager';
 import { SyncStatusBadge } from '../../components/campo/SyncStatusBadge';
 import { VectorAnnotationCanvas } from '../../components/campo/VectorAnnotationCanvas';
@@ -65,7 +66,9 @@ import {
   VectorAnnotation, 
   FotoInspeccionLocal, 
   Plano, 
-  TipoElemento, 
+  TipoElemento,
+  MorfologiaCorrosiva,
+  AmbienteISO12944, 
   ZonaInspeccion,
   HitoGeografico,
   EvaluacionCivilItem
@@ -196,6 +199,12 @@ export default function CampoPage() {
   const [antiguedadAnios, setAntiguedadAnios] = useState<number>(10);
   const [ultimoRevestimientoAnios, setUltimoRevestimientoAnios] = useState<number>(3);
   const [tasaAvancePct, setTasaAvancePct] = useState<number>(5);
+  const [usarMuestreoTramo, setUsarMuestreoTramo] = useState<boolean>(false);
+  const [tramoLongitudM, setTramoLongitudM] = useState<number>(5);
+  const [tramoUnidadesTotales, setTramoUnidadesTotales] = useState<number>(10);
+  const [tramoUnidadesAfectadas, setTramoUnidadesAfectadas] = useState<number>(2);
+  const [tramoMorfologia, setTramoMorfologia] = useState<MorfologiaCorrosiva>('superficial');
+  const [tramoAmbienteISO, setTramoAmbienteISO] = useState<AmbienteISO12944>('C5');
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
 
   // GALERÍA MULTI-FOTO POR ZONA / INSPECCIÓN (Ilimitadas fotos WebP con anotaciones y comentario individual)
@@ -662,6 +671,21 @@ export default function CampoPage() {
             items: itemsCiviles,
             notas_civiles: notasCiviles.trim() || undefined
           }
+        : undefined,
+      muestreo_tramo: usarMuestreoTramo
+        ? calcularMuestreoTramo({
+            longitudTramoM: tramoLongitudM,
+            unidadesTotales: tramoUnidadesTotales,
+            unidadesAfectadas: tramoUnidadesAfectadas,
+            morfologiaDominante: tramoMorfologia,
+            ambienteIso12944: tramoAmbienteISO,
+            ultimoRevestimientoAnios,
+            inspeccionesPrevias: inspeccionesLocales.filter(i =>
+              inspectionTargetMode === 'elemento' && selectedElemento
+                ? i.elemento_id === selectedElemento.id
+                : (i.zona_id === selectedZona?.id || i.elemento_id === `ZONA:${selectedZona?.codigo}`)
+            )
+          }).muestreo
         : undefined,
       requiere_andamio: requiereAndamioCampo,
       tipo_acceso_sugerido: tipoAccesoCampo,
@@ -1617,6 +1641,135 @@ export default function CampoPage() {
                   />
                 </div>
               </div>
+            </div>
+
+            {/* Muestreo Técnico por Tramo (Normalizado + ISO 12944) */}
+            <div className="bg-slate-950 p-3 rounded-xl border border-emerald-500/40 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider block">
+                    Muestreo Técnico por Tramo (ISO 12944)
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    Normaliza extensión por unidades en tramo (3m / 5m) + severidad morfológica
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={usarMuestreoTramo}
+                  onChange={(e) => setUsarMuestreoTramo(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                />
+              </div>
+
+              {usarMuestreoTramo && (() => {
+                const prevHistorial = inspeccionesLocales.filter(i =>
+                  inspectionTargetMode === 'elemento' && selectedElemento
+                    ? i.elemento_id === selectedElemento.id
+                    : (i.zona_id === selectedZona?.id || i.elemento_id === `ZONA:${selectedZona?.codigo}`)
+                );
+                const resMuestreo = calcularMuestreoTramo({
+                  longitudTramoM: tramoLongitudM,
+                  unidadesTotales: tramoUnidadesTotales,
+                  unidadesAfectadas: tramoUnidadesAfectadas,
+                  morfologiaDominante: tramoMorfologia,
+                  ambienteIso12944: tramoAmbienteISO,
+                  ultimoRevestimientoAnios,
+                  inspeccionesPrevias: prevHistorial
+                });
+
+                return (
+                  <div className="space-y-2.5 pt-2 border-t border-slate-800 text-xs">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Tramo (m)</label>
+                        <select
+                          value={tramoLongitudM}
+                          onChange={(e) => setTramoLongitudM(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                        >
+                          <option value={3}>3 m</option>
+                          <option value={5}>5 m</option>
+                          <option value={10}>10 m</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Unid. Totales</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={tramoUnidadesTotales}
+                          onChange={(e) => setTramoUnidadesTotales(Math.max(1, Number(e.target.value)))}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Con Corrosión</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={tramoUnidadesTotales}
+                          value={tramoUnidadesAfectadas}
+                          onChange={(e) => setTramoUnidadesAfectadas(Math.max(0, Math.min(tramoUnidadesTotales, Number(e.target.value))))}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Peor Morfología en Tramo</label>
+                        <select
+                          value={tramoMorfologia}
+                          onChange={(e) => setTramoMorfologia(e.target.value as MorfologiaCorrosiva)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white"
+                        >
+                          <option value="superficial">Superficial (película)</option>
+                          <option value="activo_laminar">Óxido activo / laminar</option>
+                          <option value="picado_perdida_seccion">Picado / pérdida de sección</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Ambiente ISO 12944</label>
+                        <select
+                          value={tramoAmbienteISO}
+                          onChange={(e) => setTramoAmbienteISO(e.target.value as AmbienteISO12944)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                        >
+                          <option value="C3">C3 (Moderado)</option>
+                          <option value="C4">C4 (Industrial)</option>
+                          <option value="C5">C5 (Húmedo/Efluentes)</option>
+                          <option value="CX">CX (Químico Extremo)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                      <div className="space-y-0.5 text-[11px] font-mono">
+                        <span className="text-white block">
+                          Extensión: <strong className="text-emerald-400">{resMuestreo.muestreo.extension_normalizada_pct}%</strong> · Sugerido: <strong className="text-amber-400">{resMuestreo.gradoSugerido}</strong>
+                        </span>
+                        <span className="text-slate-400 block text-[10px]">
+                          Tasa ({resMuestreo.fuenteTasa === 'inter_campana' ? 'Histórico real' : `Empírica ${tramoAmbienteISO}`}): <strong className="text-sky-300">{resMuestreo.muestreo.tasa_calculada_pct_anio}%/año</strong>
+                          {resMuestreo.requiereReemplazoSugerido ? ' · ⚠️ Evaluar reemplazo' : ''}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPorcentajeAfectado(resMuestreo.muestreo.extension_normalizada_pct);
+                          setGradoCorrosion(resMuestreo.gradoSugerido);
+                          setTasaAvancePct(resMuestreo.muestreo.tasa_calculada_pct_anio);
+                          if (resMuestreo.requiereReemplazoSugerido) setRequiereReemplazo(true);
+                        }}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-[11px]"
+                      >
+                        Aplicar al Relevamiento
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* SUB-SECCIÓN: EVALUACIONES CIVILES (Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas) */}
