@@ -294,6 +294,10 @@ export async function deleteFromCloud(type: 'zona' | 'elemento' | 'hito' | 'plan
     const pending = getPendingIds(PENDING_ZONAS_KEY);
     pending.delete(id);
     savePendingIds(PENDING_ZONAS_KEY, pending);
+  } else if (type === 'hito') {
+    const pendingH = getPendingIds(PENDING_HITOS_KEY);
+    pendingH.delete(id);
+    savePendingIds(PENDING_HITOS_KEY, pendingH);
   }
   try {
     await fetch('/api/sync-neon', {
