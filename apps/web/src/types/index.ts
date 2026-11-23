@@ -190,6 +190,8 @@ export interface Inspeccion {
   ultimo_revestimiento_anios?: number;
   tasa_avance_anual_pct?: number;
   meses_ventana_intervencion?: number;
+  espesor_dft_um?: number;
+  espesor_ut_mm?: number;
   proxima_inspeccion_fecha?: string;
   coordenadas_gps?: { lat: number; lng: number; precision_m?: number; timestamp?: string; en_recorrido?: boolean };
   historial_recorrido_gps?: { lat: number; lng: number; precision_m?: number; timestamp: string; pixelX?: number; pixelY?: number; zona_detectada?: string }[];

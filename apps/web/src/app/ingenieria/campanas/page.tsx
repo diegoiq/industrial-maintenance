@@ -11,10 +11,11 @@ import {
   Wrench,
   CheckCircle2,
   ArrowRight,
-  Sliders
+  Sliders,
+  FileSpreadsheet
 } from 'lucide-react';
 import { db } from '../../../lib/db';
-import { getSyncRequestHeaders } from '../../../lib/security';
+import { getSyncRequestHeaders, sanitizeCsvCell } from '../../../lib/security';
 import { ZonaInspeccion, Elemento, Inspeccion, ParametroCubicacion, Plano } from '../../../types';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia } from '../../../lib/georeferenceEngine';
 
@@ -238,13 +239,46 @@ export default function CampanasPage() {
           </button>
         </div>
 
-        <Link
-          href="/ingenieria/parametros"
-          className="text-xs text-sky-400 hover:text-sky-300 flex items-center space-x-1 font-semibold"
-        >
-          <Sliders className="w-3.5 h-3.5" />
-          <span>Ajustar Tarifas Unitarias ($/m³, $/HH, $/m²) →</span>
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          {paquetes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const headers = ['CODIGO_ZONA', 'SECTOR', 'PLANO', 'MODALIDAD', 'M2_SUPERFICIE', 'M3_ANDAMIO', 'HH_ESTIMADAS', 'COSTO_ANDAMIO_USD', 'COSTO_PINTURA_MO_USD', 'TOTAL_PAQUETE_USD'];
+                const rows = paquetesFiltrados.map(p => [
+                  sanitizeCsvCell(p.zona.codigo, true),
+                  sanitizeCsvCell(p.zona.nombre, true),
+                  sanitizeCsvCell(p.planoTitulo, true),
+                  p.requiereParada ? 'PARADA DE PLANTA' : 'EN MARCHA',
+                  p.m2Superficie,
+                  p.m3Andamio,
+                  p.hhPinturaYMontaje,
+                  p.costoAndamioCompartido,
+                  p.costoPinturaYManoObra,
+                  p.costoTotalPaquete
+                ].join(';'));
+                const blob = new Blob(['\uFEFF' + [headers.join(';'), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `PLIEGO_CAMPANA_${filtroTipo.toUpperCase()}_${new Date().toISOString().slice(0, 10)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg flex items-center space-x-1.5 shadow"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>Exportar Pliego Campaña (CSV)</span>
+            </button>
+          )}
+          <Link
+            href="/ingenieria/parametros"
+            className="text-xs text-sky-400 hover:text-sky-300 flex items-center space-x-1 font-semibold"
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span>Ajustar Tarifas Unitarias ($/m³, $/HH, $/m²) →</span>
+          </Link>
+        </div>
       </div>
 
       {paquetes.length === 0 ? (

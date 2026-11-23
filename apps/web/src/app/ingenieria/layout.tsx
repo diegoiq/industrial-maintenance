@@ -12,6 +12,7 @@ import {
   HardHat, 
   FileSpreadsheet,
   Sparkles,
+  LayoutDashboard,
   Menu,
   X,
   ChevronLeft,
@@ -58,6 +59,12 @@ export default function IngenieriaLayout({
   };
 
   const navItems = [
+    {
+      name: 'Resumen Ejecutivo',
+      href: '/ingenieria',
+      icon: LayoutDashboard,
+      description: 'KPIs globales y toma de decisiones'
+    },
     {
       name: 'Planos y Planta',
       href: '/ingenieria/planos',

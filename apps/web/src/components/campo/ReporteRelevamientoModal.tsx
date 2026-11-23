@@ -12,7 +12,7 @@ import {
   Globe,
   Camera
 } from 'lucide-react';
-import { Area, Elemento, Inspeccion, Plano, ZonaInspeccion } from '../../types';
+import { Area, Elemento, Inspeccion, ParametroCubicacion, Plano, ZonaInspeccion } from '../../types';
 import { db } from '../../lib/db';
 import { sanitizeCsvCell } from '../../lib/security';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia, getPolygonCentroid, pixelToLatLng } from '../../lib/georeferenceEngine';
@@ -37,6 +37,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
   zonas: propZonas
 }) => {
   const [zonasLocales, setZonasLocales] = useState<ZonaInspeccion[]>([]);
+  const [parametrosLocales, setParametrosLocales] = useState<ParametroCubicacion[]>([]);
 
   useEffect(() => {
     if (isOpen) {
@@ -45,6 +46,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
       } else {
         db.zonas.toArray().then(setZonasLocales);
       }
+      db.parametros.toArray().then(setParametrosLocales);
     }
   }, [isOpen, propZonas]);
 
@@ -52,11 +54,26 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
 
   const geoCal = getOrInitGeoreferencia(plano);
   const zonasReporte = plano ? zonasLocales.filter(z => z.plano_id === plano.id) : zonasLocales;
+  const zonasReporteIds = new Set(zonasReporte.map(z => z.id));
+  const zonasReporteCodigos = new Set(zonasReporte.map(z => `ZONA:${z.codigo}`));
+  const elementosReporteIds = new Set(elementos.filter(e => zonasReporteIds.has(e.zona_id)).map(e => e.id));
+
+  const inspeccionesReporte = plano
+    ? inspecciones.filter(i =>
+        (i.zona_id && zonasReporteIds.has(i.zona_id)) ||
+        (i.elemento_id && (zonasReporteCodigos.has(i.elemento_id) || elementosReporteIds.has(i.elemento_id)))
+      )
+    : inspecciones;
+
+  const getParam = (clave: string, fallback: number) => {
+    const found = parametrosLocales.find(p => p.clave === clave);
+    return found ? Number(found.valor_numerico) : fallback;
+  };
 
   // Métricas consolidadas por Zonas + Elementos (Funciona en Revisión Preliminar de Gabinete y en Relevamiento de Campo)
   const totalZonas = zonasReporte.length;
   const zonasConInspeccion = zonasReporte.filter(z =>
-    inspecciones.some(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`)
+    inspeccionesReporte.some(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`)
   ).length;
 
   const m2TotalesZonas = zonasReporte.reduce((acc, z) => {
@@ -68,12 +85,19 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
     return acc + (z.nivel_acceso_andamio?.requiere_andamio !== false ? (z.nivel_acceso_andamio?.envolvente_m3 || 180) : 0);
   }, 0);
 
-  // Estimación preliminar de HH y Presupuesto
-  const hhPreliminares = Math.round(m2TotalesZonas * 0.30 * 0.45 + m3AndamioTotales * 0.12);
-  const presupuestoPreliminarUsd = Math.round(m2TotalesZonas * 0.30 * 18.20 + hhPreliminares * 28.50 + m3AndamioTotales * 12.00);
+  // Estimación preliminar de HH y Presupuesto usando tarifas de db.parametros
+  const hhPorM2Pintura = getParam('hh_por_m2_pintura_epoxi', 0.45);
+  const costoHhMontador = getParam('costo_hh_oficial_montador', 28.50);
+  const costoM2Pintura = getParam('costo_m2_sistema_epoxi_poliuretano', 18.20);
+  const costoM3Andamio = getParam('costo_m3_andamio_mes', 12.00);
 
-  const totalFotos = inspecciones.reduce((acc, i) => acc + (i.fotos?.length || 0), 0);
-  const instanciaTexto = inspecciones.length === 0
+  const hhPreliminares = Math.round(m2TotalesZonas * 0.30 * hhPorM2Pintura + m3AndamioTotales * 0.12);
+  const presupuestoPreliminarUsd = Math.round(
+    m2TotalesZonas * 0.30 * costoM2Pintura + hhPreliminares * costoHhMontador + m3AndamioTotales * costoM3Andamio
+  );
+
+  const totalFotos = inspeccionesReporte.reduce((acc, i) => acc + (i.fotos?.length || 0), 0);
+  const instanciaTexto = inspeccionesReporte.length === 0
     ? 'INSTANCIA 1: REVISIÓN PRELIMINAR DE INGENIERÍA Y ZONIFICACIÓN GEORREFERENCIADA'
     : zonasConInspeccion < totalZonas
     ? `INSTANCIA 2: RELEVAMIENTO DE CAMPO EN PROGRESO (${zonasConInspeccion}/${totalZonas} Zonas relevadas)`
@@ -103,7 +127,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
       const gps = z.coordenadas_gps_override || pixelToLatLng(centroid.x, centroid.y, geoCal);
       const calcM2 = calculatePolygonAreaM2(z.poligono_svg?.puntos || [], geoCal);
       const m2 = z.superficie_estimada_m2 || calcM2 || 250;
-      const inspCount = inspecciones.filter(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`).length;
+      const inspCount = inspeccionesReporte.filter(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`).length;
 
       return [
         sanitizeCsvCell(z.codigo, true),
@@ -316,10 +340,10 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
           <div className="space-y-2.5">
             <h3 className="text-xs font-extrabold text-slate-200 print:text-black uppercase tracking-wider flex items-center space-x-2">
               <Camera className="w-4 h-4 text-amber-400" />
-              <span>2. Relevamiento de Campo, Hallazgos Puntuales y Registro Fotográfico ({inspecciones.length} inspecciones · {totalFotos} fotos)</span>
+              <span>2. Relevamiento de Campo, Hallazgos Puntuales y Registro Fotográfico ({inspeccionesReporte.length} inspecciones · {totalFotos} fotos)</span>
             </h3>
 
-            {inspecciones.length === 0 && elementos.length === 0 ? (
+            {inspeccionesReporte.length === 0 && elementos.length === 0 ? (
               <div className="p-4 bg-slate-900 print:bg-gray-100 rounded-xl border border-slate-800 print:border-gray-300 text-xs text-slate-300 print:text-gray-700 space-y-1">
                 <p className="font-bold text-amber-400 print:text-amber-800">
                   📋 Estado Documental: Revisión Preliminar de Ingeniería (Previo a Salida de Campo)
@@ -330,7 +354,7 @@ export const ReporteRelevamientoModal: React.FC<ReporteRelevamientoModalProps> =
               </div>
             ) : (
               <div className="space-y-3">
-                {inspecciones.map((insp) => (
+                {inspeccionesReporte.map((insp) => (
                   <div key={insp.id} className="p-4 bg-slate-900 print:bg-gray-100 rounded-xl border border-slate-800 print:border-gray-300 space-y-2 text-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 print:border-gray-300 pb-2">
                       <div className="flex flex-wrap items-center gap-2">

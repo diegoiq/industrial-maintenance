@@ -207,6 +207,7 @@ export default function CampoPage() {
   const [inspeccionesLocales, setInspeccionesLocales] = useState<Inspeccion[]>([]);
   const [catalogMaterials, setCatalogMaterials] = useState<MaterialCatalogItem[]>([]);
   const [inspectorNombreActivo, setInspectorNombreActivo] = useState<string>('Operario / Inspector de Campo');
+  const [userRolActivo, setUserRolActivo] = useState<'admin' | 'ingeniero' | 'inspector'>('inspector');
 
   useEffect(() => {
     setCatalogMaterials(loadMaterialsCatalog());
@@ -215,6 +216,7 @@ export default function CampoPage() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.nombre) setInspectorNombreActivo(parsed.nombre);
+        if (parsed.rol) setUserRolActivo(parsed.rol);
       }
     } catch {
       // ignore
@@ -701,7 +703,7 @@ export default function CampoPage() {
           tipo_acceso: tipoAccesoCampo,
           altura_mts: alturaAndamioCampo,
           envolvente_m3: volumenAndamioCampo,
-          estimado_en_campo_por: 'Validado en Campo'
+          estimado_en_campo_por: inspectorNombreActivo
         }
       };
       await db.zonas.put(updatedZona);
@@ -709,18 +711,17 @@ export default function CampoPage() {
       setZonas(await db.zonas.toArray());
     }
 
-    // Guardar en Dexie y disparar subida a Neon + Backblaze B2
+    // Guardar en Dexie y disparar subida única de la inspección (y sus fotos a B2)
     await syncManager.enqueueInspection(nuevaInspeccion);
 
-    // Sincronizar también la zona y elementos actualizados si hay conexión
+    // Sincronizar zonas y elementos actualizados (sin reenviar la inspección para evitar doble subida a B2)
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       fetch('/api/sync-neon', {
         method: 'POST',
         headers: getSyncRequestHeaders(),
         body: JSON.stringify({
           zonas: await db.zonas.toArray(),
-          elementos: await db.elementos.toArray(),
-          inspecciones: [nuevaInspeccion]
+          elementos: await db.elementos.toArray()
         })
       }).catch(() => null);
     }
@@ -748,9 +749,11 @@ export default function CampoPage() {
       {/* 2. Barra de Navegación Móvil Compacta */}
       <header className="px-3 py-2.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-2">
         <div className="flex items-center space-x-2">
-          <Link href="/ingenieria/planos" className="p-1.5 text-slate-400 hover:text-white rounded-lg bg-slate-950 border border-slate-800">
-            <ArrowLeft className="w-4 h-4" />
-          </Link>
+          {userRolActivo !== 'inspector' && (
+            <Link href="/ingenieria/planos" className="p-1.5 text-slate-400 hover:text-white rounded-lg bg-slate-950 border border-slate-800" title="Volver a Ingeniería">
+              <ArrowLeft className="w-4 h-4" />
+            </Link>
+          )}
           <div className="flex items-center space-x-1.5">
             <HardHat className="w-5 h-5 text-amber-500" />
             <div>
@@ -1235,6 +1238,36 @@ export default function CampoPage() {
                   </button>
                 </div>
               </div>
+
+              {/* Última Inspección Previa para comparación en terreno */}
+              {(() => {
+                const prevInsp = inspeccionesLocales.find(i =>
+                  inspectionTargetMode === 'elemento' && selectedElemento
+                    ? i.elemento_id === selectedElemento.id
+                    : (i.zona_id === selectedZona.id || i.elemento_id === `ZONA:${selectedZona.codigo}`)
+                );
+                if (!prevInsp) return null;
+                return (
+                  <div className="mt-2 p-2.5 rounded-lg bg-slate-900/90 border border-indigo-500/40 space-y-1">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="font-bold text-indigo-300 uppercase tracking-wider">
+                        Última Inspección Previa ({new Date(prevInsp.fecha_inspeccion).toLocaleDateString()})
+                      </span>
+                      <span className="font-mono font-bold text-amber-300">
+                        {prevInsp.grado_corrosion} · {prevInsp.porcentaje_afectado}%
+                      </span>
+                    </div>
+                    {prevInsp.observaciones && (
+                      <p className="text-[11px] text-slate-300 line-clamp-2">{prevInsp.observaciones}</p>
+                    )}
+                    {prevInsp.diagnostico_ia?.recomendacion_tecnica && (
+                      <p className="text-[10px] text-emerald-300/90 line-clamp-2">
+                        IA/Ing: {prevInsp.diagnostico_ia.recomendacion_tecnica}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -1542,6 +1575,48 @@ export default function CampoPage() {
                 onChange={(e) => setRequiereReemplazo(e.target.checked)}
                 className="w-5 h-5 accent-red-500 rounded cursor-pointer"
               />
+            </div>
+
+            {/* Envejecimiento Estructural y Proyección Temporal */}
+            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2.5">
+              <span className="text-[11px] font-bold text-sky-400 uppercase tracking-wider block">
+                Parámetros de Envejecimiento (Timeline Futuro)
+              </span>
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Antigüedad (años)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={80}
+                    value={antiguedadAnios}
+                    onChange={(e) => setAntiguedadAnios(Math.max(0, Number(e.target.value)))}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Últ. Pintado (años)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    value={ultimoRevestimientoAnios}
+                    onChange={(e) => setUltimoRevestimientoAnios(Math.max(0, Number(e.target.value)))}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Avance (%/año)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={tasaAvancePct}
+                    onChange={(e) => setTasaAvancePct(Math.max(1, Number(e.target.value)))}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                  />
+                </div>
+              </div>
             </div>
 
             {/* SUB-SECCIÓN: EVALUACIONES CIVILES (Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas) */}

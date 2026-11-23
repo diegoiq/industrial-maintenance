@@ -4,6 +4,8 @@
  * mediante cookies HttpOnly firmadas sin dependencias externas.
  */
 
+import { NextRequest } from 'next/server';
+
 export const SESSION_COOKIE_NAME = 'im_session';
 export const USER_INFO_COOKIE_NAME = 'im_user';
 
@@ -17,7 +19,6 @@ export interface SessionPayload {
 function getAuthSecret(): string {
   return (
     process.env.AUTH_SECRET ||
-    process.env.DATABASE_URL ||
     'industrial-maintenance-default-hmac-secret-2026-celulosa'
   );
 }
@@ -79,10 +80,13 @@ export async function verifySessionToken(token: string | undefined | null): Prom
     const isValid = await crypto.subtle.verify(
       'HMAC',
       key,
-      sigBytes.buffer as ArrayBuffer,
+      sigBytes as unknown as BufferSource,
       encoder.encode(payloadB64)
     );
-    if (!isValid) return null;
+    if (!isValid) {
+      console.warn('[auth] Firma HMAC inválida en token');
+      return null;
+    }
 
     const payloadBytes = base64UrlToUint8Array(payloadB64);
     const jsonStr = new TextDecoder().decode(payloadBytes);
@@ -93,7 +97,13 @@ export async function verifySessionToken(token: string | undefined | null): Prom
     }
 
     return payload;
-  } catch {
+  } catch (err) {
+    console.error('[auth] Error verificando token:', err);
     return null;
   }
+}
+
+export async function getSessionFromRequest(req: NextRequest): Promise<SessionPayload | null> {
+  const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+  return verifySessionToken(token);
 }

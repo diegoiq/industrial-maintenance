@@ -35,8 +35,14 @@ export async function middleware(req: NextRequest) {
   }
 
   // Control de Acceso Basado en Roles (RBAC):
-  // Un usuario con PIN exclusivo de 'inspector' no puede borrar registros maestros en la nube
+  // Un usuario con PIN exclusivo de 'inspector' solo opera en /campo y no puede acceder a Ingeniería ni borrar maestros
   if (session.rol === 'inspector') {
+    if (pathname.startsWith('/ingenieria')) {
+      const campoUrl = req.nextUrl.clone();
+      campoUrl.pathname = '/campo';
+      campoUrl.search = '';
+      return NextResponse.redirect(campoUrl);
+    }
     if (pathname.startsWith('/api/sync-neon') && req.method === 'DELETE') {
       return NextResponse.json(
         { success: false, error: 'Permiso insuficiente: solo Ingeniería/Admin puede eliminar zonas o planos.' },

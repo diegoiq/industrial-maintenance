@@ -8,12 +8,15 @@ import {
   CheckCircle2,
   Layers,
   ArrowRight,
-  Sliders
+  Sliders,
+  Clock,
+  AlertTriangle
 } from 'lucide-react';
 import { db } from '../../../lib/db';
 import { sanitizeCsvCell, getSyncRequestHeaders } from '../../../lib/security';
 import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, ParametroCubicacion } from '../../../types';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia, getPolygonCentroid, pixelToLatLng } from '../../../lib/georeferenceEngine';
+import { projectAssetTimeline, extractTarifasFromParams, TimelineProjectionResult } from '../../../lib/degradationModel';
 
 interface FilaPresupuestoERP {
   id: string;
@@ -35,6 +38,7 @@ interface FilaPresupuestoERP {
   costoPinturaUsd: number;
   costoEstructurasUsd: number;
   costoTotalUsd: number;
+  projection: TimelineProjectionResult;
 }
 
 export default function PresupuestosPlanMaestroPage() {
@@ -93,15 +97,11 @@ export default function PresupuestosPlanMaestroPage() {
     return found ? Number(found.valor_numerico) : fallback;
   };
 
-  const hhPorM2Pintura = getParam('hh_por_m2_pintura_epoxi', 0.45);
-  const hhPorKgAcero = getParam('hh_por_kg_acero_reemplazo', 0.12);
-  const costoHhMontador = getParam('costo_hh_oficial_montador', 28.50);
-  const costoM2Pintura = getParam('costo_m2_sistema_epoxi_poliuretano', 18.20);
-  const costoKgAcero = getParam('costo_kg_acero_perfileria', 3.40);
-  const costoM3Andamio = getParam('costo_m3_andamio_mes', 12.00);
+  const tarifas = extractTarifasFromParams(parametros);
+  const { hhPorM2Pintura, hhPorKgAcero, costoHhMontador, costoM2Pintura, costoKgAcero, costoM3Andamio } = tarifas;
 
-  // Construir filas reales de presupuesto a partir de las Zonas y Elementos cargados por el usuario
-  const filasERP: FilaPresupuestoERP[] = zonas.map((z) => {
+  // Construir filas reales de presupuesto a partir de las Zonas y Activos Puntuales
+  const filasZonas: FilaPresupuestoERP[] = zonas.map((z) => {
     const plano = planos.find(p => p.id === z.plano_id);
     const area = areas.find(a => a.id === plano?.area_id);
     const geoCal = getOrInitGeoreferencia(plano);
@@ -118,12 +118,20 @@ export default function PresupuestosPlanMaestroPage() {
       ? (ultimaInsp.requiere_reemplazo || ultimaInsp.grado_corrosion === 'Ri 5' ? 'critico' : ultimaInsp.grado_corrosion === 'Ri 4' ? 'malo' : ultimaInsp.grado_corrosion === 'Ri 3' ? 'regular' : 'bueno')
       : (z.estado_salud_apriori || 'regular');
 
-    const prioridad: 'P1' | 'P2' | 'P3' = salud === 'critico' || salud === 'malo' ? 'P1' : salud === 'regular' ? 'P2' : 'P3';
-    const anioAsignado = prioridad === 'P1' ? 2026 : prioridad === 'P2' ? 2027 : 2028;
-
-    const pctAfectado = ultimaInsp ? (ultimaInsp.porcentaje_afectado || 25) : (salud === 'critico' ? 60 : salud === 'malo' ? 40 : salud === 'regular' ? 25 : 15);
-    const m2Afectados = Math.round((m2Superficie * pctAfectado) / 100);
     const m3Andamio = z.nivel_acceso_andamio?.requiere_andamio !== false ? (z.nivel_acceso_andamio?.envolvente_m3 || 180) : 0;
+    const projection = projectAssetTimeline({
+      m2Superficie,
+      m3Andamio,
+      saludFallback: salud,
+      ultimaInspeccion: ultimaInsp,
+      tarifas
+    });
+
+    const prioridad: 'P1' | 'P2' | 'P3' = salud === 'critico' || salud === 'malo' ? 'P1' : salud === 'regular' ? 'P2' : 'P3';
+    const anioAsignado = projection.anioRecomendado;
+
+    const pctAfectado = projection.porcentajeActual;
+    const m2Afectados = Math.round((m2Superficie * pctAfectado) / 100);
     const kgAceroReemplazo = (ultimaInsp?.requiere_reemplazo || salud === 'critico') ? Math.round(m2Afectados * 18) : 0;
 
     const hhPintura = m2Afectados * hhPorM2Pintura;
@@ -154,9 +162,72 @@ export default function PresupuestosPlanMaestroPage() {
       costoAndamioUsd,
       costoPinturaUsd,
       costoEstructurasUsd,
-      costoTotalUsd
+      costoTotalUsd,
+      projection
     };
   });
+
+  // Incluir también Elementos / Activos puntuales evaluados en campo o críticos
+  const filasElementos: FilaPresupuestoERP[] = elementos
+    .filter(el => el.estado_actual !== 'gris' || inspecciones.some(i => i.elemento_id === el.id))
+    .map((el) => {
+      const zonaPadre = zonas.find(z => z.id === el.zona_id);
+      const plano = planos.find(p => p.id === zonaPadre?.plano_id);
+      const area = areas.find(a => a.id === plano?.area_id);
+      const ultimaInsp = inspecciones.find(i => i.elemento_id === el.id);
+
+      const salud = ultimaInsp
+        ? (ultimaInsp.requiere_reemplazo || ultimaInsp.grado_corrosion === 'Ri 5' ? 'critico' : ultimaInsp.grado_corrosion === 'Ri 4' ? 'malo' : ultimaInsp.grado_corrosion === 'Ri 3' ? 'regular' : 'bueno')
+        : (el.estado_actual === 'rojo' ? 'critico' : el.estado_actual === 'naranja' ? 'malo' : el.estado_actual === 'amarillo' ? 'regular' : 'bueno');
+
+      const m2Superficie = el.geometria_parametros?.m2_superficie || 25;
+      const m3Andamio = ultimaInsp?.requiere_andamio ? (ultimaInsp.volumen_andamio_m3 || 40) : 0;
+
+      const projection = projectAssetTimeline({
+        m2Superficie,
+        m3Andamio,
+        saludFallback: salud,
+        ultimaInspeccion: ultimaInsp,
+        tarifas
+      });
+
+      const prioridad: 'P1' | 'P2' | 'P3' = salud === 'critico' || salud === 'malo' ? 'P1' : salud === 'regular' ? 'P2' : 'P3';
+      const pctAfectado = projection.porcentajeActual;
+      const m2Afectados = Math.max(1, Math.round((m2Superficie * pctAfectado) / 100));
+      const kgAceroReemplazo = (ultimaInsp?.requiere_reemplazo || salud === 'critico') ? Math.round(m2Afectados * 18) : 0;
+
+      const hhPintura = m2Afectados * hhPorM2Pintura;
+      const hhAcero = kgAceroReemplazo * hhPorKgAcero;
+      const hhEstimadas = Math.round(hhPintura + hhAcero);
+      const costoAndamioUsd = Math.round(m3Andamio * costoM3Andamio);
+      const costoPinturaUsd = Math.round(m2Afectados * costoM2Pintura + hhPintura * costoHhMontador);
+      const costoEstructurasUsd = Math.round(kgAceroReemplazo * costoKgAcero + hhAcero * costoHhMontador);
+
+      return {
+        id: el.id,
+        tipoRegistro: 'ACTIVO',
+        codigoTag: el.tag_codigo,
+        nombre: `${el.tipo_elemento.replace(/_/g, ' ')} (${zonaPadre?.codigo || 'Planta'})`,
+        ubicacionErp: el.codigo_equipo_erp || area?.ubicacion_tecnica_erp || 'PLANTA-GRAL',
+        cotaM: zonaPadre ? `+${(Number(zonaPadre.cota_nivel || 146000) / 1000).toFixed(1)}m` : '+146.0m',
+        gpsStr: el.coordenadas_gps ? `${el.coordenadas_gps.lat.toFixed(5)}, ${el.coordenadas_gps.lng.toFixed(5)}` : 'N/A',
+        estadoSalud: salud.toUpperCase(),
+        prioridad,
+        anioAsignado: projection.anioRecomendado,
+        m2Superficie,
+        m2Afectados,
+        m3Andamio,
+        kgAceroReemplazo,
+        hhEstimadas,
+        costoAndamioUsd,
+        costoPinturaUsd,
+        costoEstructurasUsd,
+        costoTotalUsd: costoAndamioUsd + costoPinturaUsd + costoEstructurasUsd,
+        projection
+      };
+    });
+
+  const filasERP: FilaPresupuestoERP[] = [...filasZonas, ...filasElementos];
 
   const aniosVisibles = horizonteAnios === 3 ? [2026, 2027, 2028] : [2026, 2027, 2028, 2029, 2030];
 
@@ -408,6 +479,83 @@ export default function PresupuestosPlanMaestroPage() {
           </div>
         </div>
       </div>
+
+      {/* Timeline Futuro de Degradación (2026-2030) y Costo de No-Intervención */}
+      {filasERP.length > 0 && (() => {
+        const costoTempranoTotal = filasERP.reduce((acc, f) => acc + f.projection.costoIntervencionTempranaUsd, 0);
+        const costoNoIntervencionTotal = filasERP.reduce((acc, f) => acc + f.projection.costoNoIntervencionUsd, 0);
+        const ahorroNetoTotal = Math.max(0, costoNoIntervencionTotal - costoTempranoTotal);
+
+        return (
+          <div className="bg-slate-900 border border-amber-500/40 rounded-xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center space-x-2">
+                  <Clock className="w-4 h-4 text-amber-400" />
+                  <span>Timeline Futuro ISO 4628 (2026–2030) y Consecuencias de No-Intervención</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Proyección de deterioro según grado actual, tasa de avance anual y ventana de intervención.
+                </p>
+              </div>
+              <div className="flex items-center space-x-3 text-xs font-mono">
+                <div className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
+                  <span className="text-slate-400 block text-[10px]">Si se posterga a 2030:</span>
+                  <span className="font-bold text-red-400">${costoNoIntervencionTotal.toLocaleString()} USD</span>
+                </div>
+                <div className="px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/50">
+                  <span className="text-emerald-300 block text-[10px]">Ahorro Intervención Oportuna:</span>
+                  <span className="font-black text-emerald-400">${ahorroNetoTotal.toLocaleString()} USD</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+              {[2026, 2027, 2028, 2029, 2030].map((anio) => {
+                const itemsAnio = filasERP.filter(f => f.anioAsignado === anio);
+                const riesgoCritico = itemsAnio.some(f => f.projection.anioFallaCritica && f.projection.anioFallaCritica <= anio);
+                return (
+                  <div
+                    key={anio}
+                    className={`rounded-xl p-3 border space-y-2 ${
+                      riesgoCritico
+                        ? 'bg-red-950/20 border-red-500/40'
+                        : 'bg-slate-950 border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                      <span className="font-mono font-black text-sm text-amber-400">{anio}</span>
+                      <span className="text-[10px] font-mono text-slate-400">{itemsAnio.length} interv.</span>
+                    </div>
+                    {itemsAnio.length === 0 ? (
+                      <p className="text-[11px] text-slate-500 italic">Sin intervenciones programadas.</p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                        {itemsAnio.map((item) => (
+                          <div key={item.id} className="p-2 rounded bg-slate-900 border border-slate-800 text-[11px] space-y-0.5">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-mono font-bold text-white truncate">{item.codigoTag}</span>
+                              <span className="text-[10px] font-mono text-amber-300">{item.projection.gradoActual}</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 leading-snug">
+                              {item.projection.consecuenciaSiPosterga}
+                            </p>
+                            {item.projection.ahorroOportunoUsd > 0 && (
+                              <span className="text-[10px] font-mono text-emerald-400 block">
+                                Ahorro: +${item.projection.ahorroOportunoUsd.toLocaleString()} USD
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Tabla Maestra Real para SAP PM */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">

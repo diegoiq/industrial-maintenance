@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/neon';
 import { uploadToB2 } from '@/lib/b2';
+import { getSessionFromRequest } from '@/lib/auth';
 import {
   isValidEntityId,
   sanitizeSvgContent,
   validateBase64DataUrl
 } from '@/lib/security';
-import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico } from '@/types';
+import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, HitoGeografico, ParametroCubicacion } from '@/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,6 +62,8 @@ async function ensureExtendedSchema() {
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS coordenadas_gps JSONB DEFAULT NULL`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS historial_recorrido_gps JSONB DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS evaluacion_civil JSONB DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS inspector_nombre VARCHAR(120) DEFAULT NULL`;
+    await sql`ALTER TABLE public.elementos ALTER COLUMN tipo_elemento TYPE VARCHAR(80) USING tipo_elemento::text`;
     await sql`ALTER TABLE public.inspecciones ALTER COLUMN elemento_id DROP NOT NULL`;
     await sql`ALTER TABLE public.inspecciones DROP CONSTRAINT IF EXISTS inspecciones_elemento_id_fkey`;
     await sql`ALTER TABLE public.zonas_inspeccion DROP CONSTRAINT IF EXISTS uq_plano_zona`;
@@ -81,6 +84,18 @@ async function ensureExtendedSchema() {
         plano_id VARCHAR(100),
         coordenadas_plano JSONB DEFAULT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+      )
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS public.parametros_cubicacion (
+        clave VARCHAR(100) PRIMARY KEY,
+        id VARCHAR(100) NOT NULL,
+        categoria VARCHAR(80) NOT NULL,
+        valor_numerico NUMERIC(12, 4) NOT NULL,
+        unidad VARCHAR(40) NOT NULL,
+        descripcion TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
       )
     `;
   } catch (ddlErr) {
@@ -177,6 +192,7 @@ export async function GET(req: NextRequest) {
     const elementos = await sql`SELECT * FROM public.elementos ORDER BY tag_codigo`;
     const hitos = await sql`SELECT * FROM public.hitos_geograficos ORDER BY created_at DESC`;
     const rawInspecciones = await sql`SELECT * FROM public.inspecciones ORDER BY fecha_inspeccion DESC`;
+    const parametros = await sql`SELECT * FROM public.parametros_cubicacion ORDER BY categoria, clave`;
 
     const inspecciones = rawInspecciones.map((row: any) => ({
       ...row,
@@ -201,6 +217,10 @@ export async function GET(req: NextRequest) {
           cota_snm: h.cota_snm ? Number(h.cota_snm) : 146000
         })),
         inspecciones,
+        parametros: parametros.map((p: any) => ({
+          ...p,
+          valor_numerico: Number(p.valor_numerico)
+        })),
         elementosCount: elementos.length,
         inspeccionesCount: inspecciones.length,
       }
@@ -261,6 +281,7 @@ export async function POST(req: NextRequest) {
       elementos = [],
       hitos = [],
       inspecciones = [],
+      parametros = [],
       authoritativeZonas = false,
       authoritativeHitos = false
     }: {
@@ -270,14 +291,25 @@ export async function POST(req: NextRequest) {
       elementos?: Elemento[];
       hitos?: HitoGeografico[];
       inspecciones?: Inspeccion[];
+      parametros?: ParametroCubicacion[];
       authoritativeZonas?: boolean;
       authoritativeHitos?: boolean;
     } = body;
 
     let b2UploadsCount = 0;
 
+    // RBAC: Un inspector de campo no puede ejecutar sincronizaciones destructivas de zonas o hitos maestros
+    const session = await getSessionFromRequest(req);
+    if (session?.rol === 'inspector' && (authoritativeZonas || authoritativeHitos)) {
+      return NextResponse.json(
+        { success: false, error: 'Permiso insuficiente: solo Ingeniería/Admin puede sobrescribir zonas o hitos maestros.' },
+        { status: 403 }
+      );
+    }
+
     // 1. Áreas
     for (const a of areas) {
+      if (!isValidEntityId(a.id)) continue;
       await sql`
         INSERT INTO public.areas (id, codigo, nombre, ubicacion_tecnica_erp, descripcion)
         VALUES (${a.id}, ${a.codigo}, ${a.nombre}, ${a.ubicacion_tecnica_erp || null}, ${a.descripcion || null})
@@ -367,6 +399,7 @@ export async function POST(req: NextRequest) {
     }
 
     for (const z of zonas) {
+      if (!isValidEntityId(z.id)) continue;
       await sql`
         INSERT INTO public.zonas_inspeccion (
           id, plano_id, area_planta, codigo, nombre, cota_nivel, nombre_nivel,
@@ -405,9 +438,8 @@ export async function POST(req: NextRequest) {
 
     // 4. Elementos
     for (const e of elementos) {
-      const validTipo = [
-        'acero_estructural', 'baranda', 'plataforma', 'soporte', 'equipo', 'caneria', 'tanque'
-      ].includes(e.tipo_elemento) ? e.tipo_elemento : 'acero_estructural';
+      if (!isValidEntityId(e.id)) continue;
+      const cleanTipo = String(e.tipo_elemento || 'acero_estructural').trim().slice(0, 80) || 'acero_estructural';
 
       await sql`
         INSERT INTO public.elementos (
@@ -421,7 +453,7 @@ export async function POST(req: NextRequest) {
           ${e.tag_codigo},
           ${e.codigo_equipo_erp || null},
           ${e.qr_token || `QR-${e.id}`},
-          ${validTipo},
+          ${cleanTipo},
           ${JSON.stringify(e.coordenadas_pin || { x: 0, y: 0 })},
           ${JSON.stringify(e.geometria_parametros || {})},
           ${e.criticidad_activo || 3},
@@ -522,7 +554,7 @@ export async function POST(req: NextRequest) {
 
       await sql`
         INSERT INTO public.inspecciones (
-          id, elemento_id, zona_id, zona_codigo, inspector_id, fecha_inspeccion,
+          id, elemento_id, zona_id, zona_codigo, inspector_id, inspector_nombre, fecha_inspeccion,
           estado_sincronizacion, clasificacion_sustrato, clasificacion_recubrimiento,
           grado_corrosion, requiere_reemplazo, porcentaje_afectado,
           criticidad_calculada, observaciones, diagnostico_ia, fotos_json,
@@ -534,6 +566,7 @@ export async function POST(req: NextRequest) {
           ${insp.zona_id || null},
           ${insp.zona_codigo || null},
           ${insp.inspector_id || null},
+          ${insp.inspector_nombre || null},
           ${insp.fecha_inspeccion || new Date().toISOString()},
           'sincronizado',
           ${insp.clasificacion_sustrato || 'acero_al_carbono'},
@@ -553,6 +586,7 @@ export async function POST(req: NextRequest) {
           estado_sincronizacion = 'sincronizado',
           zona_id = COALESCE(EXCLUDED.zona_id, public.inspecciones.zona_id),
           zona_codigo = COALESCE(EXCLUDED.zona_codigo, public.inspecciones.zona_codigo),
+          inspector_nombre = COALESCE(EXCLUDED.inspector_nombre, public.inspecciones.inspector_nombre),
           clasificacion_sustrato = EXCLUDED.clasificacion_sustrato,
           clasificacion_recubrimiento = EXCLUDED.clasificacion_recubrimiento,
           grado_corrosion = EXCLUDED.grado_corrosion,
@@ -565,6 +599,30 @@ export async function POST(req: NextRequest) {
           coordenadas_gps = COALESCE(EXCLUDED.coordenadas_gps, public.inspecciones.coordenadas_gps),
           historial_recorrido_gps = COALESCE(EXCLUDED.historial_recorrido_gps, public.inspecciones.historial_recorrido_gps),
           evaluacion_civil = COALESCE(EXCLUDED.evaluacion_civil, public.inspecciones.evaluacion_civil)
+      `;
+    }
+
+    // 7. Parámetros de Cubicación y Tarifas (Fuente única compartida)
+    for (const prm of parametros) {
+      if (!prm.clave) continue;
+      await sql`
+        INSERT INTO public.parametros_cubicacion (
+          clave, id, categoria, valor_numerico, unidad, descripcion, updated_at
+        )
+        VALUES (
+          ${prm.clave},
+          ${prm.id || prm.clave},
+          ${prm.categoria || 'general'},
+          ${Number(prm.valor_numerico) || 0},
+          ${prm.unidad || 'USD'},
+          ${prm.descripcion || ''},
+          now()
+        )
+        ON CONFLICT (clave) DO UPDATE SET
+          valor_numerico = EXCLUDED.valor_numerico,
+          unidad = EXCLUDED.unidad,
+          descripcion = EXCLUDED.descripcion,
+          updated_at = now()
       `;
     }
 

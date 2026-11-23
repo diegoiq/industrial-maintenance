@@ -20,6 +20,7 @@ import {
   Save
 } from 'lucide-react';
 import { db } from '../../../lib/db';
+import { getSyncRequestHeaders } from '../../../lib/security';
 import { INITIAL_PARAMETROS } from '../../../lib/mockData';
 import { ParametroCubicacion, ZonaInspeccion, Inspeccion, Plano } from '../../../types';
 import { calculatePolygonAreaM2, getOrInitGeoreferencia } from '../../../lib/georeferenceEngine';
@@ -84,6 +85,21 @@ export default function ParametrosCubicacionPage() {
         }
         storedParams = INITIAL_PARAMETROS;
       }
+
+      // Hidratar parámetros compartidos desde Neon si existen
+      try {
+        const res = await fetch('/api/sync-neon', { headers: getSyncRequestHeaders() });
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data?.parametros) && json.data.parametros.length > 0) {
+          for (const cp of json.data.parametros) {
+            await db.parametros.put(cp);
+          }
+          storedParams = await db.parametros.toArray();
+        }
+      } catch {
+        // Offline: mantener parámetros locales
+      }
+
       setParametros(storedParams);
       setCatalog(loadMaterialsCatalog());
 
@@ -190,9 +206,18 @@ export default function ParametrosCubicacionPage() {
     if (!item) return;
 
     const valAnterior = item.valor_numerico;
-    const updatedItem = { ...item, valor_numerico: nuevoValor };
+    const updatedItem = { ...item, valor_numerico: nuevoValor, updated_at: new Date().toISOString() };
     await db.parametros.put(updatedItem);
     setParametros(prev => prev.map(p => (p.id === id ? updatedItem : p)));
+
+    // Sincronizar con Neon para que Campañas, Presupuestos y Reportes usen la misma tarifa
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      fetch('/api/sync-neon', {
+        method: 'POST',
+        headers: getSyncRequestHeaders(),
+        body: JSON.stringify({ parametros: [updatedItem] })
+      }).catch(() => null);
+    }
 
     setAuditLog(prev => [
       {

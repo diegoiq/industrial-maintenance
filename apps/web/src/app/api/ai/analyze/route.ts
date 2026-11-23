@@ -13,6 +13,7 @@ async function resolveImageToInlineData(
 
   // 1. Data URL directa (subida desde PC o caché local)
   if (imageInput.startsWith('data:')) {
+    if (imageInput.length > 5_500_000) return null; // Máx ~4 MB en base64
     const idx = imageInput.indexOf(';base64,');
     if (idx === -1) return null;
     const mimeType = imageInput.slice(5, idx).trim().toLowerCase();

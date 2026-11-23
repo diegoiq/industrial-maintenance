@@ -26,31 +26,47 @@ export default function SistemaTelemetriaPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [stressTestActive, setStressTestActive] = useState(false);
+  const [neonCounts, setNeonCounts] = useState<{
+    areas: number;
+    planos: number;
+    zonas: number;
+    elementos: number;
+    hitos: number;
+    inspecciones: number;
+    fotos: number;
+  } | null>(null);
 
-  // Consulta de métricas en vivo desde el backend de FastAPI
+  // Consulta de métricas en vivo desde Neon + Backblaze B2 manifest
   const fetchLiveMetrics = async () => {
     setIsLoading(true);
     try {
-      const apiEngineUrl = process.env.NEXT_PUBLIC_API_ENGINE_URL || 'http://localhost:8000';
-      const res = await fetch(`${apiEngineUrl}/health/metrics`, { cache: 'no-store' }).catch(() => null);
-
+      const res = await fetch('/api/sync-neon?mode=manifest', { cache: 'no-store' }).catch(() => null);
       if (res && res.ok) {
-        const data = await res.json();
-        setMetrics(prev => ({
-          ...prev,
-          render_api: {
-            service_name: data.service_name || 'industrial-maintenance-engine',
-            container_limit_mb: data.container_limit_mb || 512,
-            process_ram_mb: data.process_ram_mb || 138.4,
-            render_ram_percent: data.render_ram_percent || 27.0,
-            alert_status: data.alert_status || 'optimo',
-            alert_message: data.alert_message || 'OK',
-            uptime_seconds: data.uptime_seconds || 3600
-          }
-        }));
+        const json = await res.json();
+        const counts = json?.manifest?.counts;
+        if (counts) {
+          setNeonCounts(counts);
+          const totalBytesPlanos = (json.manifest.planos || []).reduce((acc: number, p: any) => acc + Number(p.payload_bytes || 0), 0);
+          const estimatedDbBytes = totalBytesPlanos + (counts.zonas * 2048) + (counts.inspecciones * 4096);
+          const estimatedB2Bytes = (counts.fotos * 180 * 1024) + (counts.planos * 2 * 1024 * 1024);
+          setMetrics(prev => ({
+            ...prev,
+            supabase: {
+              ...prev.supabase,
+              db_size_bytes: Math.max(1024 * 1024, estimatedDbBytes),
+              db_usage_percent: Number(((Math.max(1024 * 1024, estimatedDbBytes) / prev.supabase.db_limit_bytes) * 100).toFixed(2)),
+              storage_size_bytes: estimatedB2Bytes,
+              storage_usage_percent: Number(((estimatedB2Bytes / (10 * 1024 * 1024 * 1024)) * 100).toFixed(2)),
+              buckets: [
+                { bucket_id: 'backblaze-b2-fotos', total_bytes: counts.fotos * 180 * 1024, total_archivos: counts.fotos },
+                { bucket_id: 'backblaze-b2-planos', total_bytes: counts.planos * 2 * 1024 * 1024, total_archivos: counts.planos }
+              ]
+            }
+          }));
+        }
       }
     } catch (err) {
-      console.warn('Backend metrics offline, utilizando telemetría de monitoreo simulada');
+      console.warn('No se pudo consultar manifiesto Neon:', err);
     } finally {
       setIsLoading(false);
     }
@@ -122,7 +138,10 @@ export default function SistemaTelemetriaPage() {
             <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-purple-950 text-purple-400 border border-purple-800">
               MÓDULO 7 · ROL ADMIN
             </span>
-            <span className="text-xs text-slate-500 font-mono">Límites Free Tier (Render + Supabase)</span>
+            <span className="text-xs text-slate-500 font-mono">
+              Stack Activo: Vercel Edge · Neon PostgreSQL · Backblaze B2
+              {neonCounts ? ` (${neonCounts.planos} planos · ${neonCounts.zonas} zonas · ${neonCounts.inspecciones} insp. · ${neonCounts.fotos} fotos B2)` : ''}
+            </span>
           </div>
           <h2 className="text-2xl font-black text-white tracking-tight mt-1 flex items-center space-x-2">
             <span>Monitor de Salud y Límites de Infraestructura</span>
