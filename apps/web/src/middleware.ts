@@ -43,12 +43,6 @@ export async function middleware(req: NextRequest) {
       campoUrl.search = '';
       return NextResponse.redirect(campoUrl);
     }
-    if (pathname.startsWith('/api/sync-neon') && req.method === 'DELETE') {
-      return NextResponse.json(
-        { success: false, error: 'Permiso insuficiente: solo Ingeniería/Admin puede eliminar zonas o planos.' },
-        { status: 403 }
-      );
-    }
   }
 
   return NextResponse.next();

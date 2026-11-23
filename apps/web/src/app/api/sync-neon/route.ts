@@ -251,6 +251,14 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Parámetros type o id inválidos' }, { status: 400 });
     }
 
+    const session = await getSessionFromRequest(req);
+    if (session?.rol === 'inspector' && type !== 'elemento') {
+      return NextResponse.json(
+        { success: false, error: 'Permiso insuficiente: solo Ingeniería/Admin puede eliminar zonas, planos o hitos.' },
+        { status: 403 }
+      );
+    }
+
     if (type === 'zona') {
       await sql`DELETE FROM public.elementos WHERE zona_id = ${id}`;
       await sql`DELETE FROM public.zonas_inspeccion WHERE id = ${id}`;

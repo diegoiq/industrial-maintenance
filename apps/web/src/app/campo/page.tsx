@@ -38,7 +38,8 @@ import {
   pullAndReconcileFromCloud,
   pushFastSyncToCloud,
   smartEdgeHeartbeatSync,
-  markLocalEntityPendingPush
+  markLocalEntityPendingPush,
+  deleteFromCloud
 } from '../../lib/cloudSync';
 import { getSyncRequestHeaders, sanitizeSvgContent } from '../../lib/security';
 import { compressInspectionPhoto } from '../../lib/imageCompression';
@@ -1261,6 +1262,70 @@ export default function CampoPage() {
                     <span>+ Agregar Elemento / Hallazgo en {selectedZona.codigo}</span>
                   </button>
                 </div>
+
+                {inspectionTargetMode === 'elemento' && selectedElemento && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const nuevoTag = window.prompt('Editar Tag / Código del Pin:', selectedElemento.tag_codigo);
+                        if (!nuevoTag || !nuevoTag.trim()) return;
+                        const updated: Elemento = { ...selectedElemento, tag_codigo: nuevoTag.trim().toUpperCase() };
+                        await db.elementos.put(updated);
+                        setElementos(await db.elementos.toArray());
+                        setSelectedElemento(updated);
+                        if (typeof navigator === 'undefined' || navigator.onLine) {
+                          pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: false, authoritativeHitos: false }).catch(() => null);
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-[11px] font-semibold"
+                    >
+                      ✏️ Editar Tag
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!gpsData) {
+                          alert('Primero capturá tu ubicación GPS actual arriba para reubicar este pin.');
+                          return;
+                        }
+                        const newPixel = latLngToPixel(gpsData.lat, gpsData.lng, geoCal);
+                        const updated: Elemento = {
+                          ...selectedElemento,
+                          coordenadas_pin: { x: Math.round(newPixel.x), y: Math.round(newPixel.y) },
+                          coordenadas_gps: { lat: gpsData.lat, lng: gpsData.lng, precision_m: gpsData.precision_m }
+                        };
+                        await db.elementos.put(updated);
+                        setElementos(await db.elementos.toArray());
+                        setSelectedElemento(updated);
+                        if (typeof navigator === 'undefined' || navigator.onLine) {
+                          pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: false, authoritativeHitos: false }).catch(() => null);
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-700/60 rounded-lg text-[11px] font-semibold"
+                    >
+                      📍 Reubicar Pin con GPS
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!window.confirm(`¿Eliminar el pin "${selectedElemento.tag_codigo}"?`)) return;
+                        const idDel = selectedElemento.id;
+                        await db.elementos.delete(idDel);
+                        const rest = await db.elementos.toArray();
+                        setElementos(rest);
+                        const nextInZona = rest.find(e => e.zona_id === selectedZona.id) || null;
+                        setSelectedElemento(nextInZona);
+                        if (!nextInZona) setInspectionTargetMode('zona_general');
+                        await deleteFromCloud('elemento', idDel).catch(() => null);
+                      }}
+                      className="px-2.5 py-1 bg-red-950/70 hover:bg-red-900/80 text-red-300 border border-red-800/60 rounded-lg text-[11px] font-semibold flex items-center space-x-1"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Eliminar Pin</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Última Inspección Previa para comparación en terreno */}

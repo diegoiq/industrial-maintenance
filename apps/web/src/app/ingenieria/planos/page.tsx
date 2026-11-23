@@ -623,6 +623,17 @@ export default function PlanosIngenieriaPage() {
           onOpenUploadPlanModal={() => setIsUploadPlanModalOpen(true)}
           onAddVertexToZone={handleAddVertexToZone}
           onDeleteZone={handleDeleteZone}
+          onDeleteElemento={async (elementoId) => {
+            const target = elementos.find(el => el.id === elementoId);
+            if (!target) return;
+            if (!window.confirm(`¿Eliminar el pin "${target.tag_codigo}"?`)) return;
+            await db.elementos.delete(elementoId);
+            setElementos(prev => prev.filter(el => el.id !== elementoId));
+            setSelectedElemento(undefined);
+            await deleteFromCloud('elemento', elementoId);
+            setNotification(`Pin "${target.tag_codigo}" eliminado.`);
+            setTimeout(() => setNotification(null), 3000);
+          }}
           isEditingPolygon={isEditingZonePolygon}
           onToggleEditPolygon={() => setIsEditingZonePolygon(prev => !prev)}
           onOpenEditZoneModal={(z) => {

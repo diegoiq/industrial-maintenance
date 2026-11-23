@@ -40,6 +40,7 @@ interface ZoneDrawerProps {
   onOpenUploadPlanModal?: () => void;
   onAddVertexToZone?: (zonaId: string) => void;
   onDeleteZone?: (zonaId: string) => void;
+  onDeleteElemento?: (elementoId: string) => void;
   onToggleEditPolygon?: () => void;
   onOpenEditZoneModal?: (zona: ZonaInspeccion) => void;
   onUpdateZoneData?: (updatedZona: ZonaInspeccion) => void;
@@ -59,6 +60,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
   onOpenUploadPlanModal,
   onAddVertexToZone,
   onDeleteZone,
+  onDeleteElemento,
   onToggleEditPolygon,
   onOpenEditZoneModal,
   onUpdateZoneData,
@@ -516,14 +518,26 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => onOpenQRModal(elemento)}
-              className="w-full py-2 px-3 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg flex items-center justify-center space-x-2 transition shadow-lg"
-            >
-              <QrCode className="w-4 h-4" />
-              <span>Generar Etiqueta QR Imprimible</span>
-            </button>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => onOpenQRModal(elemento)}
+                className="flex-1 py-2 px-3 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg flex items-center justify-center space-x-2 transition shadow-lg"
+              >
+                <QrCode className="w-4 h-4" />
+                <span>Generar Etiqueta QR Imprimible</span>
+              </button>
+              {onDeleteElemento && (
+                <button
+                  type="button"
+                  onClick={() => onDeleteElemento(elemento.id)}
+                  className="py-2 px-2.5 bg-red-950/60 hover:bg-red-900/80 border border-red-800/60 text-red-300 font-bold text-xs rounded-lg flex items-center justify-center transition"
+                  title="Eliminar este pin / activo"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
