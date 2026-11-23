@@ -64,6 +64,7 @@ interface InteractivePlantMapProps {
   onUpdateZonePolygon?: (zonaId: string, puntos: { x: number; y: number }[]) => void;
   onPolygonCreated?: (puntos: { x: number; y: number }[]) => void;
   onToggleEditPolygon?: () => void;
+  onEntityContextMenu?: (payload: { type: 'zona' | 'elemento' | 'hito'; item: any; clientX: number; clientY: number }) => void;
 }
 
 export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
@@ -85,7 +86,8 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
   onPlanUpdated,
   onUpdateZonePolygon,
   onPolygonCreated,
-  onToggleEditPolygon
+  onToggleEditPolygon,
+  onEntityContextMenu
 }) => {
   const [showZonasLayer, setShowZonasLayer] = useState(true);
   const [showPinsLayer, setShowPinsLayer] = useState(true);
@@ -1471,6 +1473,13 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                           onSelectZona(zona);
                         }
                       }}
+                      onContextMenu={(e) => {
+                        if (!isEditingPolygon && onEntityContextMenu) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onEntityContextMenu({ type: 'zona', item: zona, clientX: e.clientX, clientY: e.clientY });
+                        }
+                      }}
                     >
                       <polygon
                         points={pointsStr}
@@ -1625,6 +1634,13 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                         e.stopPropagation();
                         onSelectElemento(elem);
                       }}
+                      onContextMenu={(e) => {
+                        if (onEntityContextMenu) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onEntityContextMenu({ type: 'elemento', item: elem, clientX: e.clientX, clientY: e.clientY });
+                        }
+                      }}
                       filter="url(#pin-shadow)"
                     >
                       {color.pulse && (
@@ -1691,6 +1707,13 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       onClick={(e) => {
                         e.stopPropagation();
                         if (onSelectHito) onSelectHito(hito);
+                      }}
+                      onContextMenu={(e) => {
+                        if (onEntityContextMenu) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onEntityContextMenu({ type: 'hito', item: hito, clientX: e.clientX, clientY: e.clientY });
+                        }
                       }}
                       filter="url(#pin-shadow)"
                     >

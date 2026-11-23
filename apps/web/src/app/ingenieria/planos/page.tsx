@@ -59,8 +59,14 @@ export default function PlanosIngenieriaPage() {
   const [customPolygonPoints, setCustomPolygonPoints] = useState<{ x: number; y: number }[] | undefined>(undefined);
   const [isEditingZonePolygon, setIsEditingZonePolygon] = useState<boolean>(false);
 
-  // Menú desplegable "Más opciones" en topbar
+  // Menú desplegable "Más opciones" en topbar y Menú Contextual sobre el mapa
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
+  const [contextMenu, setContextMenu] = useState<{
+    type: 'zona' | 'elemento' | 'hito';
+    item: any;
+    x: number;
+    y: number;
+  } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -68,9 +74,17 @@ export default function PlanosIngenieriaPage() {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setIsMenuOpen(false);
       }
+      setContextMenu(null);
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
     };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
   }, []);
 
   // Modales
@@ -600,7 +614,194 @@ export default function PlanosIngenieriaPage() {
           onPolygonCreated={handlePolygonCreated}
           isEditingPolygon={isEditingZonePolygon}
           onToggleEditPolygon={() => setIsEditingZonePolygon(prev => !prev)}
+          onEntityContextMenu={({ type, item, clientX, clientY }) => {
+            setContextMenu({
+              type,
+              item,
+              x: Math.min(clientX, window.innerWidth - 240),
+              y: Math.min(clientY, window.innerHeight - 220)
+            });
+          }}
         />
+
+        {/* Menú Contextual de Clic Derecho sobre Pines, Hitos GPS y Zonas */}
+        {contextMenu && (
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            className="fixed z-50 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 text-xs text-slate-200 backdrop-blur-md"
+          >
+            <div className="px-3 py-1.5 border-b border-slate-800 text-[10px] font-mono uppercase tracking-wider text-amber-400 font-bold truncate">
+              {contextMenu.type === 'elemento' && `Pin: ${contextMenu.item.tag_codigo}`}
+              {contextMenu.type === 'hito' && `GPS: ${contextMenu.item.codigo}`}
+              {contextMenu.type === 'zona' && `Zona: ${contextMenu.item.codigo}`}
+            </div>
+
+            {contextMenu.type === 'elemento' && (
+              <>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const elem: Elemento = contextMenu.item;
+                    setContextMenu(null);
+                    const nuevoTag = window.prompt('Editar Tag / Código del Pin:', elem.tag_codigo);
+                    if (!nuevoTag || !nuevoTag.trim()) return;
+                    const updated: Elemento = { ...elem, tag_codigo: nuevoTag.trim().toUpperCase() };
+                    await db.elementos.put(updated);
+                    setElementos(prev => prev.map(el => (el.id === updated.id ? updated : el)));
+                    if (selectedElemento?.id === updated.id) setSelectedElemento(updated);
+                    pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: false, authoritativeHitos: false }).catch(() => null);
+                    setNotification(`Pin renombrado a "${updated.tag_codigo}".`);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
+                >
+                  <span>✏️ Editar Tag / Código</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const elem: Elemento = contextMenu.item;
+                    setContextMenu(null);
+                    handleSelectElemento(elem);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
+                >
+                  <span>📍 Ver / Editar GPS en Ficha</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const elem: Elemento = contextMenu.item;
+                    setContextMenu(null);
+                    handleOpenQRModal(elem);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
+                >
+                  <span>🔲 Etiqueta QR</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const elem: Elemento = contextMenu.item;
+                    setContextMenu(null);
+                    if (!window.confirm(`¿Eliminar el pin "${elem.tag_codigo}"?`)) return;
+                    await db.elementos.delete(elem.id);
+                    setElementos(prev => prev.filter(el => el.id !== elem.id));
+                    if (selectedElemento?.id === elem.id) setSelectedElemento(undefined);
+                    await deleteFromCloud('elemento', elem.id);
+                    setNotification(`Pin "${elem.tag_codigo}" eliminado.`);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-red-950/60 text-red-400 flex items-center space-x-2 border-t border-slate-800 mt-1"
+                >
+                  <span>🗑️ Eliminar Pin</span>
+                </button>
+              </>
+            )}
+
+            {contextMenu.type === 'hito' && (
+              <>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const hito: HitoGeografico = contextMenu.item;
+                    setContextMenu(null);
+                    const nuevoCodigo = window.prompt('Código del Hito GPS:', hito.codigo);
+                    if (!nuevoCodigo || !nuevoCodigo.trim()) return;
+                    const nuevoNombre = window.prompt('Nombre descriptivo del Hito:', hito.nombre) || hito.nombre;
+                    const updated: HitoGeografico = { ...hito, codigo: nuevoCodigo.trim().toUpperCase(), nombre: nuevoNombre.trim() };
+                    await db.hitos.put(updated);
+                    setHitos(prev => prev.map(h => (h.id === updated.id ? updated : h)));
+                    if (selectedHito?.id === updated.id) setSelectedHito(updated);
+                    pushFastSyncToCloud({ authoritativeHitos: true }).catch(() => null);
+                    setNotification(`Hito GPS "${updated.codigo}" actualizado.`);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
+                >
+                  <span>✏️ Editar Código / Nombre</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const hito: HitoGeografico = contextMenu.item;
+                    setContextMenu(null);
+                    const coordsStr = window.prompt('Nueva Latitud, Longitud (ej: -25.986558, -54.639548):', `${hito.lat}, ${hito.lng}`);
+                    if (!coordsStr) return;
+                    const parts = coordsStr.split(',').map(s => Number(s.trim()));
+                    if (parts.length !== 2 || Number.isNaN(parts[0]) || Number.isNaN(parts[1])) {
+                      alert('Formato inválido. Use: latitud, longitud');
+                      return;
+                    }
+                    const updated: HitoGeografico = { ...hito, lat: parts[0], lng: parts[1] };
+                    await db.hitos.put(updated);
+                    setHitos(prev => prev.map(h => (h.id === updated.id ? updated : h)));
+                    if (selectedHito?.id === updated.id) setSelectedHito(updated);
+                    pushFastSyncToCloud({ authoritativeHitos: true }).catch(() => null);
+                    setNotification(`Coordenadas GPS de "${updated.codigo}" actualizadas.`);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
+                >
+                  <span>📍 Corregir Lat / Lng</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const hito: HitoGeografico = contextMenu.item;
+                    setContextMenu(null);
+                    if (!window.confirm(`¿Eliminar el Hito GPS "${hito.codigo}"?`)) return;
+                    await db.hitos.delete(hito.id);
+                    setHitos(prev => prev.filter(h => h.id !== hito.id));
+                    if (selectedHito?.id === hito.id) setSelectedHito(undefined);
+                    await deleteFromCloud('hito', hito.id);
+                    setNotification(`Hito GPS "${hito.codigo}" eliminado.`);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-red-950/60 text-red-400 flex items-center space-x-2 border-t border-slate-800 mt-1"
+                >
+                  <span>🗑️ Eliminar Hito GPS</span>
+                </button>
+              </>
+            )}
+
+            {contextMenu.type === 'zona' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const z: ZonaInspeccion = contextMenu.item;
+                    setContextMenu(null);
+                    setZoneToEdit(z);
+                    setIsEditZoneModalOpen(true);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
+                >
+                  <span>✏️ Editar Propiedades de Zona</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const z: ZonaInspeccion = contextMenu.item;
+                    setContextMenu(null);
+                    handleSelectZona(z);
+                    setIsEditingZonePolygon(true);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
+                >
+                  <span>📐 Editar Vértices en Plano</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const z: ZonaInspeccion = contextMenu.item;
+                    setContextMenu(null);
+                    handleDeleteZone(z.id);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-red-950/60 text-red-400 flex items-center space-x-2 border-t border-slate-800 mt-1"
+                >
+                  <span>🗑️ Eliminar Zona</span>
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Panel Lateral Drawer Flotante */}
         <ZoneDrawer
