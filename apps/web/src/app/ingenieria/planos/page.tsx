@@ -31,7 +31,7 @@ import { HitosMapsModal } from '../../../components/ingenieria/HitosMapsModal';
 import { SyncComparatorModal } from '../../../components/ingenieria/SyncComparatorModal';
 import { db } from '../../../lib/db';
 import { getSyncRequestHeaders } from '../../../lib/security';
-import { getOrInitGeoreferencia, latLngToPixel, pixelToLatLng } from '../../../lib/georeferenceEngine';
+import { getOrInitGeoreferencia, getPolygonCentroid, latLngToPixel, pixelToLatLng } from '../../../lib/georeferenceEngine';
 import {
   pushFastSyncToCloud,
   deleteFromCloud,
@@ -68,9 +68,12 @@ export default function PlanosIngenieriaPage() {
     x: number;
     y: number;
     confirmDelete?: boolean;
+    editMode?: 'tag' | 'hito_info' | 'hito_gps';
+    field1?: string;
+    field2?: string;
   } | null>(null);
   const [relocatingEntity, setRelocatingEntity] = useState<{
-    type: 'elemento' | 'hito';
+    type: 'elemento' | 'hito' | 'zona';
     item: any;
   } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -267,6 +270,14 @@ export default function PlanosIngenieriaPage() {
         if (selectedHito?.id === updated.id) setSelectedHito(updated);
         pushFastSyncToCloud({ authoritativeHitos: true }).catch(() => null);
         setNotification(`Hito GPS "${updated.codigo}" reubicado en el plano.`);
+      } else if (relocatingEntity.type === 'zona') {
+        const z: ZonaInspeccion = relocatingEntity.item;
+        const pts = z.poligono_svg?.puntos || [];
+        const centroid = getPolygonCentroid(pts);
+        const dx = Math.round(coords.x - centroid.x);
+        const dy = Math.round(coords.y - centroid.y);
+        const newPuntos = pts.map(p => ({ x: Math.round(p.x + dx), y: Math.round(p.y + dy) }));
+        await handleUpdateZonePolygon(z.id, newPuntos);
       }
 
       setRelocatingEntity(null);
@@ -659,16 +670,38 @@ export default function PlanosIngenieriaPage() {
           onUpdateZonePolygon={handleUpdateZonePolygon}
           onPolygonCreated={handlePolygonCreated}
           isEditingPolygon={isEditingZonePolygon}
+          isRelocating={Boolean(relocatingEntity)}
           onToggleEditPolygon={() => setIsEditingZonePolygon(prev => !prev)}
           onEntityContextMenu={({ type, item, clientX, clientY }) => {
             setContextMenu({
               type,
               item,
-              x: Math.min(clientX, window.innerWidth - 240),
-              y: Math.min(clientY, window.innerHeight - 220)
+              x: Math.min(clientX, window.innerWidth - 250),
+              y: Math.min(clientY, window.innerHeight - 240)
             });
           }}
         />
+
+        {/* Banner activo mientras se elige nueva ubicación en el plano */}
+        {relocatingEntity && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 px-4 py-2 bg-emerald-950/95 border-2 border-emerald-400 rounded-xl shadow-2xl flex items-center space-x-3 text-xs text-emerald-100">
+            <span>
+              🎯 Hacé clic en el nuevo lugar del plano para mover{' '}
+              <strong className="text-white font-mono">
+                {relocatingEntity.type === 'elemento'
+                  ? relocatingEntity.item.tag_codigo
+                  : relocatingEntity.item.codigo}
+              </strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => setRelocatingEntity(null)}
+              className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded font-bold text-[11px]"
+            >
+              Cancelar (Esc)
+            </button>
+          </div>
+        )}
 
         {/* Menú Contextual de Clic Derecho sobre Pines, Hitos GPS y Zonas */}
         {contextMenu && (
@@ -737,6 +770,130 @@ export default function PlanosIngenieriaPage() {
                   </button>
                 </div>
               </div>
+            ) : contextMenu.editMode ? (
+              <div className="p-3 space-y-2.5 bg-slate-950/80">
+                {contextMenu.editMode === 'tag' && (
+                  <>
+                    <label className="text-[10px] font-bold text-slate-400 block uppercase">Tag / Código del Pin</label>
+                    <input
+                      type="text"
+                      value={contextMenu.field1 || ''}
+                      onChange={(e) => setContextMenu(prev => (prev ? { ...prev, field1: e.target.value } : null))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs"
+                      autoFocus
+                    />
+                  </>
+                )}
+
+                {contextMenu.editMode === 'hito_info' && (
+                  <>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 block uppercase mb-0.5">Código Hito</label>
+                      <input
+                        type="text"
+                        value={contextMenu.field1 || ''}
+                        onChange={(e) => setContextMenu(prev => (prev ? { ...prev, field1: e.target.value } : null))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs"
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 block uppercase mb-0.5">Nombre</label>
+                      <input
+                        type="text"
+                        value={contextMenu.field2 || ''}
+                        onChange={(e) => setContextMenu(prev => (prev ? { ...prev, field2: e.target.value } : null))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white text-xs"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {contextMenu.editMode === 'hito_gps' && (
+                  <>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 block uppercase mb-0.5">Latitud</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={contextMenu.field1 || ''}
+                        onChange={(e) => setContextMenu(prev => (prev ? { ...prev, field1: e.target.value } : null))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs"
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 block uppercase mb-0.5">Longitud</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={contextMenu.field2 || ''}
+                        onChange={(e) => setContextMenu(prev => (prev ? { ...prev, field2: e.target.value } : null))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="flex items-center space-x-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const { editMode, item, field1, field2 } = contextMenu;
+                      if (editMode === 'tag') {
+                        const nuevoTag = (field1 || '').trim().toUpperCase();
+                        if (!nuevoTag) return;
+                        const updated: Elemento = { ...item, tag_codigo: nuevoTag };
+                        await db.elementos.put(updated);
+                        setElementos(prev => prev.map(el => (el.id === updated.id ? updated : el)));
+                        if (selectedElemento?.id === updated.id) setSelectedElemento(updated);
+                        pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: false, authoritativeHitos: false }).catch(() => null);
+                        setNotification(`Pin renombrado a "${updated.tag_codigo}".`);
+                      } else if (editMode === 'hito_info') {
+                        const nuevoCod = (field1 || '').trim().toUpperCase();
+                        if (!nuevoCod) return;
+                        const updated: HitoGeografico = { ...item, codigo: nuevoCod, nombre: (field2 || item.nombre).trim() };
+                        markLocalEntityPendingPush('hito', updated.id);
+                        await db.hitos.put(updated);
+                        setHitos(prev => prev.map(h => (h.id === updated.id ? updated : h)));
+                        if (selectedHito?.id === updated.id) setSelectedHito(updated);
+                        pushFastSyncToCloud({ authoritativeHitos: true }).catch(() => null);
+                        setNotification(`Hito GPS "${updated.codigo}" actualizado.`);
+                      } else if (editMode === 'hito_gps') {
+                        const newLat = Number(field1);
+                        const newLng = Number(field2);
+                        if (Number.isNaN(newLat) || Number.isNaN(newLng)) return;
+                        const geoCal = getOrInitGeoreferencia(currentPlano, hitosPlano);
+                        const newPixel = latLngToPixel(newLat, newLng, geoCal);
+                        const updated: HitoGeografico = {
+                          ...item,
+                          lat: newLat,
+                          lng: newLng,
+                          coordenadas_plano: { x: Math.round(newPixel.x), y: Math.round(newPixel.y) }
+                        };
+                        markLocalEntityPendingPush('hito', updated.id);
+                        await db.hitos.put(updated);
+                        setHitos(prev => prev.map(h => (h.id === updated.id ? updated : h)));
+                        if (selectedHito?.id === updated.id) setSelectedHito(updated);
+                        pushFastSyncToCloud({ authoritativeHitos: true }).catch(() => null);
+                        setNotification(`Coordenadas GPS de "${updated.codigo}" actualizadas.`);
+                      }
+                      setContextMenu(null);
+                      setTimeout(() => setNotification(null), 3500);
+                    }}
+                    className="flex-1 py-1.5 px-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-[11px]"
+                  >
+                    Guardar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setContextMenu(prev => (prev ? { ...prev, editMode: undefined } : null))}
+                    className="py-1.5 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px]"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
             ) : (
               <>
                 {contextMenu.type === 'elemento' && (
@@ -755,18 +912,11 @@ export default function PlanosIngenieriaPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        const elem: Elemento = contextMenu.item;
-                        setContextMenu(null);
-                        const nuevoTag = window.prompt('Editar Tag / Código del Pin:', elem.tag_codigo);
-                        if (!nuevoTag || !nuevoTag.trim()) return;
-                        const updated: Elemento = { ...elem, tag_codigo: nuevoTag.trim().toUpperCase() };
-                        await db.elementos.put(updated);
-                        setElementos(prev => prev.map(el => (el.id === updated.id ? updated : el)));
-                        if (selectedElemento?.id === updated.id) setSelectedElemento(updated);
-                        pushFastSyncToCloud({ includePlanImages: false, authoritativeZonas: false, authoritativeHitos: false }).catch(() => null);
-                        setNotification(`Pin renombrado a "${updated.tag_codigo}".`);
-                      }}
+                      onClick={() =>
+                        setContextMenu(prev =>
+                          prev ? { ...prev, editMode: 'tag', field1: prev.item.tag_codigo } : null
+                        )
+                      }
                       className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
                     >
                       <span>✏️ Editar Tag / Código</span>
@@ -819,49 +969,31 @@ export default function PlanosIngenieriaPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        const hito: HitoGeografico = contextMenu.item;
-                        setContextMenu(null);
-                        const nuevoCodigo = window.prompt('Código del Hito GPS:', hito.codigo);
-                        if (!nuevoCodigo || !nuevoCodigo.trim()) return;
-                        const nuevoNombre = window.prompt('Nombre descriptivo del Hito:', hito.nombre) || hito.nombre;
-                        const updated: HitoGeografico = { ...hito, codigo: nuevoCodigo.trim().toUpperCase(), nombre: nuevoNombre.trim() };
-                        await db.hitos.put(updated);
-                        setHitos(prev => prev.map(h => (h.id === updated.id ? updated : h)));
-                        if (selectedHito?.id === updated.id) setSelectedHito(updated);
-                        pushFastSyncToCloud({ authoritativeHitos: true }).catch(() => null);
-                        setNotification(`Hito GPS "${updated.codigo}" actualizado.`);
-                      }}
+                      onClick={() =>
+                        setContextMenu(prev =>
+                          prev
+                            ? { ...prev, editMode: 'hito_info', field1: prev.item.codigo, field2: prev.item.nombre }
+                            : null
+                        )
+                      }
                       className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
                     >
                       <span>✏️ Editar Código / Nombre</span>
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        const hito: HitoGeografico = contextMenu.item;
-                        setContextMenu(null);
-                        const coordsStr = window.prompt('Nueva Latitud, Longitud (ej: -25.986558, -54.639548):', `${hito.lat}, ${hito.lng}`);
-                        if (!coordsStr) return;
-                        const parts = coordsStr.split(',').map(s => Number(s.trim()));
-                        if (parts.length !== 2 || Number.isNaN(parts[0]) || Number.isNaN(parts[1])) {
-                          alert('Formato inválido. Use: latitud, longitud');
-                          return;
-                        }
-                        const geoCal = getOrInitGeoreferencia(currentPlano, hitosPlano);
-                        const newPixel = latLngToPixel(parts[0], parts[1], geoCal);
-                        const updated: HitoGeografico = {
-                          ...hito,
-                          lat: parts[0],
-                          lng: parts[1],
-                          coordenadas_plano: { x: Math.round(newPixel.x), y: Math.round(newPixel.y) }
-                        };
-                        await db.hitos.put(updated);
-                        setHitos(prev => prev.map(h => (h.id === updated.id ? updated : h)));
-                        if (selectedHito?.id === updated.id) setSelectedHito(updated);
-                        pushFastSyncToCloud({ authoritativeHitos: true }).catch(() => null);
-                        setNotification(`Coordenadas GPS de "${updated.codigo}" actualizadas.`);
-                      }}
+                      onClick={() =>
+                        setContextMenu(prev =>
+                          prev
+                            ? {
+                                ...prev,
+                                editMode: 'hito_gps',
+                                field1: String(prev.item.lat),
+                                field2: String(prev.item.lng)
+                              }
+                            : null
+                        )
+                      }
                       className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2"
                     >
                       <span>📍 Corregir Lat / Lng</span>
@@ -878,6 +1010,18 @@ export default function PlanosIngenieriaPage() {
 
                 {contextMenu.type === 'zona' && (
                   <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const z: ZonaInspeccion = contextMenu.item;
+                        setContextMenu(null);
+                        setRelocatingEntity({ type: 'zona', item: z });
+                        setNotification(`Hacé clic en el plano para desplazar la Zona "${z.codigo}" (Esc para cancelar).`);
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2 text-emerald-300 font-semibold"
+                    >
+                      <span>🎯 Mover posición en el plano</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {

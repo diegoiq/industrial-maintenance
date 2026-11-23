@@ -55,6 +55,7 @@ interface InteractivePlantMapProps {
   activeMode?: 'inspect' | 'add_pin' | 'add_zone' | 'add_hito';
   onChangeMode?: (mode: 'inspect' | 'add_pin' | 'add_zone' | 'add_hito') => void;
   isEditingPolygon?: boolean;
+  isRelocating?: boolean;
   onSelectZona: (zona: ZonaInspeccion) => void;
   onSelectElemento: (elemento: Elemento) => void;
   onSelectHito?: (hito: HitoGeografico) => void;
@@ -78,6 +79,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
   activeMode = 'inspect',
   onChangeMode,
   isEditingPolygon = false,
+  isRelocating = false,
   onSelectZona,
   onSelectElemento,
   onSelectHito,
@@ -343,7 +345,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
       return;
     }
 
-    if (activeMode === 'add_pin' || activeMode === 'add_hito') {
+    if (isRelocating || activeMode === 'add_pin' || activeMode === 'add_hito') {
       if (onMapClick) onMapClick(coords);
       return;
     }
@@ -1326,7 +1328,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                 ref={svgRef}
                 viewBox={`0 0 ${vbWidth} ${vbHeight}`}
                 className={`w-full h-full max-h-screen object-contain ${
-                  isSettingPivot ? 'cursor-crosshair' : isDragSatelliteMode ? 'cursor-move' : ''
+                  isSettingPivot || isRelocating ? 'cursor-crosshair' : isDragSatelliteMode ? 'cursor-move' : ''
                 }`}
                 onClick={handleSvgClick}
                 onMouseDown={handleSvgMouseDown}
@@ -1468,6 +1470,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       onMouseEnter={() => setHoveredZonaId(zona.id)}
                       onMouseLeave={() => setHoveredZonaId(prev => (prev === zona.id ? null : prev))}
                       onClick={(e) => {
+                        if (isRelocating) return;
                         if (activeMode === 'inspect' && !isMeasuringScale) {
                           e.stopPropagation();
                           onSelectZona(zona);
@@ -1631,6 +1634,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       transform={`translate(${x}, ${y}) scale(${invZoom})`}
                       className="cursor-pointer group"
                       onClick={(e) => {
+                        if (isRelocating) return;
                         e.stopPropagation();
                         onSelectElemento(elem);
                       }}
@@ -1705,6 +1709,7 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
                       transform={`translate(${x}, ${y}) scale(${invZoom})`}
                       className="cursor-pointer group"
                       onClick={(e) => {
+                        if (isRelocating) return;
                         e.stopPropagation();
                         if (onSelectHito) onSelectHito(hito);
                       }}
