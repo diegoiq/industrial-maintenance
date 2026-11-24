@@ -93,6 +93,8 @@ export default function PlanosIngenieriaPage() {
       if (e.key === 'Escape') {
         setContextMenu(null);
         setRelocatingEntity(null);
+        setActiveMode('inspect');
+        setDefaultAreaForNewZone(undefined);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -695,7 +697,7 @@ export default function PlanosIngenieriaPage() {
           }}
         />
 
-        {/* Banner activo mientras se elige nueva ubicación en el plano */}
+        {/* Banner activo mientras se elige nueva ubicación o se traza nueva zona */}
         {relocatingEntity && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 px-4 py-2 bg-emerald-950/95 border-2 border-emerald-400 rounded-xl shadow-2xl flex items-center space-x-3 text-xs text-emerald-100">
             <span>
@@ -710,6 +712,26 @@ export default function PlanosIngenieriaPage() {
               type="button"
               onClick={() => setRelocatingEntity(null)}
               className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded font-bold text-[11px]"
+            >
+              Cancelar (Esc)
+            </button>
+          </div>
+        )}
+
+        {activeMode === 'add_zone' && !relocatingEntity && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 px-4 py-2 bg-sky-950/95 border-2 border-sky-400 rounded-xl shadow-2xl flex items-center space-x-3 text-xs text-sky-100">
+            <span>
+              📐 Marcá 3 o más vértices en el plano para crear la zona
+              {defaultAreaForNewZone ? ` (Área: ${defaultAreaForNewZone})` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveMode('inspect');
+                setDefaultAreaForNewZone(undefined);
+                setNotification(null);
+              }}
+              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded font-bold text-[11px] border border-slate-600"
             >
               Cancelar (Esc)
             </button>

@@ -376,7 +376,14 @@ export const InteractivePlantMap: React.FC<InteractivePlantMapProps> = ({
 
   const handleCancelDrawing = () => {
     setDrawingPoints([]);
+    if (onChangeMode) onChangeMode('inspect');
   };
+
+  useEffect(() => {
+    if (activeMode !== 'add_zone' && drawingPoints.length > 0) {
+      setDrawingPoints([]);
+    }
+  }, [activeMode, drawingPoints.length]);
 
   const handleUndoDrawingPoint = () => {
     setDrawingPoints(prev => prev.slice(0, prev.length - 1));
