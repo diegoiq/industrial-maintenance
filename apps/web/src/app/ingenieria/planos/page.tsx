@@ -547,7 +547,7 @@ export default function PlanosIngenieriaPage() {
             )}
           </div>
 
-          {/* Filtro de Cota/Nivel Compacto */}
+          {/* Filtro de Cota/Nivel Compacto (incluye cotas manuales registradas) */}
           <select
             value={filtroNivel}
             onChange={(e) => setFiltroNivel(e.target.value)}
@@ -555,10 +555,21 @@ export default function PlanosIngenieriaPage() {
             title="Filtrar Zonas por Cota / Nivel"
           >
             <option value="todos">Niveles: Todos</option>
-            <option value="146000">+146.000 m (Suelo)</option>
-            <option value="152000">+152.000 m (+6m)</option>
-            <option value="158000">+158.000 m (+12m)</option>
-            <option value="170000">+170.000 m (+24m)</option>
+            {Array.from(
+              new Set([
+                146000,
+                152000,
+                158000,
+                170000,
+                ...zonasPlano.map(z => Number(z.cota_nivel || 146000))
+              ])
+            )
+              .sort((a, b) => a - b)
+              .map(cota => (
+                <option key={cota} value={String(cota)}>
+                  +{(cota / 1000).toFixed(3)} m
+                </option>
+              ))}
           </select>
         </div>
 

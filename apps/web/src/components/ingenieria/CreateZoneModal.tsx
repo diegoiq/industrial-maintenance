@@ -96,6 +96,9 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
     }).catch(() => null);
   }, [isOpen, defaultAreaPlanta]);
   const [cotaNivel, setCotaNivel] = useState<number>(146000);
+  const [isManualCota, setIsManualCota] = useState<boolean>(false);
+  const [manualCotaMetros, setManualCotaMetros] = useState<string>('146.000');
+  const [manualNombreNivel, setManualNombreNivel] = useState<string>('');
   const [disciplinas, setDisciplinas] = useState<DisciplinaZona[]>([
     'estructuras_acero',
     'parral_canerias'
@@ -138,6 +141,10 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
       ];
 
       const nivelObj = NIVELES_PLANTA.find(n => n.cota === cotaNivel);
+      const finalCotaMm = isManualCota ? Math.round((parseFloat(manualCotaMetros) || 0) * 1000) : cotaNivel;
+      const finalNombreNivel = isManualCota
+        ? (manualNombreNivel.trim() || `Cota +${(finalCotaMm / 1000).toFixed(3)} m`)
+        : (nivelObj?.nombre || `Cota +${(cotaNivel / 1000).toFixed(3)} m`);
 
       const areaFinal = areaPlanta === '__custom__' ? (customAreaPlanta.trim() || 'General') : areaPlanta;
 
@@ -147,8 +154,8 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
         area_planta: areaFinal,
         codigo: codigo.trim().toUpperCase(),
         nombre: nombre.trim(),
-        cota_nivel: cotaNivel,
-        nombre_nivel: nivelObj?.nombre || `Cota +${(cotaNivel / 1000).toFixed(3)} m`,
+        cota_nivel: finalCotaMm,
+        nombre_nivel: finalNombreNivel,
         disciplinas_involucradas: disciplinas,
         estado_salud_apriori: saludApriori,
         superficie_estimada_m2: superficieEstimadaM2,
@@ -225,14 +232,42 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
             <div>
               <label className="text-slate-400 block mb-1">Cota Georreferenciada / Nivel de Planta *</label>
               <select
-                value={cotaNivel}
-                onChange={(e) => setCotaNivel(Number(e.target.value))}
+                value={isManualCota ? '__manual__' : String(cotaNivel)}
+                onChange={(e) => {
+                  if (e.target.value === '__manual__') {
+                    setIsManualCota(true);
+                    setManualCotaMetros((cotaNivel / 1000).toFixed(3));
+                  } else {
+                    setIsManualCota(false);
+                    setCotaNivel(Number(e.target.value));
+                  }
+                }}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-amber-400 font-mono font-bold focus:border-amber-400 focus:outline-none"
               >
                 {NIVELES_PLANTA.map(n => (
                   <option key={n.cota} value={n.cota}>{n.nombre}</option>
                 ))}
+                <option value="__manual__">✏️ Cota Manual (Ingresar metros)...</option>
               </select>
+              {isManualCota && (
+                <div className="grid grid-cols-2 gap-2 mt-1.5">
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={manualCotaMetros}
+                    onChange={(e) => setManualCotaMetros(e.target.value)}
+                    placeholder="Ej: 148.500 (m)"
+                    className="bg-slate-950 border border-amber-500/70 rounded-lg p-2 text-amber-300 font-mono text-xs focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    value={manualNombreNivel}
+                    onChange={(e) => setManualNombreNivel(e.target.value)}
+                    placeholder="Nombre nivel (opcional)"
+                    className="bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs focus:outline-none"
+                  />
+                </div>
+              )}
             </div>
           </div>
 
