@@ -2,13 +2,16 @@
 
 import React, { useState, useEffect } from 'react';
 import { Layers, X, CheckCircle2, AlertCircle, Building2, HardHat, ShieldAlert, Ruler } from 'lucide-react';
-import { ZonaInspeccion, DisciplinaZona } from '../../types';
+import { ZonaInspeccion, DisciplinaZona, Plano, HitoGeografico } from '../../types';
 import { db } from '../../lib/db';
+import { calculatePolygonAreaM2, calculatePolygonPerimeterM, getOrInitGeoreferencia } from '../../lib/georeferenceEngine';
 
 interface CreateZoneModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentPlanoId: string;
+  currentPlano?: Plano;
+  hitos?: HitoGeografico[];
   defaultPoints?: { x: number; y: number }[];
   defaultAreaPlanta?: string;
   onZoneCreated: (newZone: ZonaInspeccion) => void;
@@ -44,6 +47,8 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
   isOpen,
   onClose,
   currentPlanoId,
+  currentPlano,
+  hitos = [],
   defaultPoints,
   defaultAreaPlanta,
   onZoneCreated
@@ -53,9 +58,20 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
   const [areaPlanta, setAreaPlanta] = useState(defaultAreaPlanta || 'Efluentes');
   const [customAreaPlanta, setCustomAreaPlanta] = useState('');
   const [areasOpciones, setAreasOpciones] = useState<string[]>(AREAS_PLANTA_SUGERIDAS);
+  const [geoStats, setGeoStats] = useState<{ areaM2: number; perimM: number; mPerPx: number } | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
+    if (defaultPoints && defaultPoints.length >= 3) {
+      const geoCal = getOrInitGeoreferencia(currentPlano, hitos);
+      const areaM2 = Math.max(1, Math.round(calculatePolygonAreaM2(defaultPoints, geoCal)));
+      const perimM = Math.round(calculatePolygonPerimeterM(defaultPoints, geoCal));
+      setSuperficieEstimadaM2(areaM2);
+      setGeoStats({ areaM2, perimM, mPerPx: geoCal.metersPerPixel });
+    } else {
+      setGeoStats(null);
+      setSuperficieEstimadaM2(250);
+    }
     db.areas.toArray().then(dbAreas => {
       const merged = Array.from(new Set([
         ...AREAS_PLANTA_SUGERIDAS,
@@ -298,13 +314,29 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
             </div>
 
             <div>
-              <label className="text-slate-400 block mb-1">Superficie Estimada (m²)</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-slate-400">Superficie Estimada (m²)</label>
+                {geoStats && (
+                  <button
+                    type="button"
+                    onClick={() => setSuperficieEstimadaM2(geoStats.areaM2)}
+                    className="text-[10px] font-mono text-sky-400 hover:text-sky-300 underline"
+                  >
+                    Usar polígono ({geoStats.areaM2} m²)
+                  </button>
+                )}
+              </div>
               <input
                 type="number"
                 value={superficieEstimadaM2}
                 onChange={(e) => setSuperficieEstimadaM2(parseFloat(e.target.value) || 0)}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono"
               />
+              {geoStats && (
+                <span className="text-[10px] text-emerald-400 font-mono block mt-1">
+                  📐 Estimado por vértices: {geoStats.areaM2} m² · Perímetro: {geoStats.perimM} m ({geoStats.mPerPx.toFixed(3)} m/px)
+                </span>
+              )}
             </div>
           </div>
 

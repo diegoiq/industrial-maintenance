@@ -1197,6 +1197,8 @@ export default function PlanosIngenieriaPage() {
           setDefaultAreaForNewZone(undefined);
         }}
         currentPlanoId={selectedPlanoId}
+        currentPlano={currentPlano}
+        hitos={hitosPlano}
         defaultPoints={customPolygonPoints}
         defaultAreaPlanta={defaultAreaForNewZone}
         onZoneCreated={(newZone) => {
