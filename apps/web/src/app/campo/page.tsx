@@ -146,6 +146,11 @@ export default function CampoPage() {
   const [selectedZona, setSelectedZona] = useState<ZonaInspeccion | null>(null);
   const [selectedElemento, setSelectedElemento] = useState<Elemento | null>(null);
   const [isZoneLocked, setIsZoneLocked] = useState<boolean>(true);
+  const [activeFieldTab, setActiveFieldTab] = useState<'zonas' | 'relevamiento' | 'historial'>('zonas');
+  const [zonaSearchQuery, setZonaSearchQuery] = useState<string>('');
+  const [soloZonasPendientes, setSoloZonasPendientes] = useState<boolean>(false);
+  const [showProyeccionParams, setShowProyeccionParams] = useState<boolean>(false);
+  const [historialFilter, setHistorialFilter] = useState<'todos' | 'pendiente' | 'sincronizado'>('todos');
 
   const selectedZonaIdRef = useRef<string | null>(null);
   const selectedPlanoIdRef = useRef<string>('');
@@ -345,7 +350,11 @@ export default function CampoPage() {
     const matchCota = cotaFiltro === 'todos' || String(z.cota_nivel || 146000) === cotaFiltro;
     const areaName = (z.area_planta || 'Sin Área Asignada').trim();
     const matchArea = areaFiltro === 'todos' || areaName === areaFiltro;
-    return matchCota && matchArea;
+    const q = zonaSearchQuery.trim().toLowerCase();
+    const matchSearch = !q || z.codigo.toLowerCase().includes(q) || z.nombre.toLowerCase().includes(q);
+    const yaRelevada = inspeccionesLocales.some(i => i.zona_id === z.id || i.elemento_id === `ZONA:${z.codigo}`);
+    const matchPendiente = !soloZonasPendientes || !yaRelevada;
+    return matchCota && matchArea && matchSearch && matchPendiente;
   });
   const zonasPorAreaMap = zonasFiltradas.reduce<Record<string, ZonaInspeccion[]>>((acc, z) => {
     const key = (z.area_planta || 'Sin Área Asignada').trim();
@@ -356,7 +365,7 @@ export default function CampoPage() {
   const elementosDeZona = selectedZona ? elementos.filter(e => e.zona_id === selectedZona.id) : [];
 
   // Seleccionar una Zona para iniciar el recorrido en campo
-  const handleSelectZonaForTour = (zona: ZonaInspeccion, allElems: Elemento[] = elementos) => {
+  const handleSelectZonaForTour = (zona: ZonaInspeccion, allElems: Elemento[] = elementos, goToForm: boolean = false) => {
     setSelectedZona(zona);
     if (zona.nivel_acceso_andamio) {
       setRequiereAndamioCampo(zona.nivel_acceso_andamio.requiere_andamio !== false);
@@ -364,12 +373,21 @@ export default function CampoPage() {
       setAlturaAndamioCampo(zona.nivel_acceso_andamio.altura_mts || 6.5);
       setVolumenAndamioCampo(zona.nivel_acceso_andamio.envolvente_m3 || 180);
     }
+    const prevZonaInsp = inspeccionesLocales.find(i => i.zona_id === zona.id || i.elemento_id === `ZONA:${zona.codigo}`);
+    if (prevZonaInsp) {
+      if (prevZonaInsp.antiguedad_anios) setAntiguedadAnios(prevZonaInsp.antiguedad_anios);
+      if (prevZonaInsp.ultimo_revestimiento_anios) setUltimoRevestimientoAnios(prevZonaInsp.ultimo_revestimiento_anios);
+      if (prevZonaInsp.tasa_avance_anual_pct) setTasaAvancePct(prevZonaInsp.tasa_avance_anual_pct);
+    }
     const elemsInZona = allElems.filter(e => e.zona_id === zona.id);
     if (elemsInZona.length > 0) {
       setSelectedElemento(elemsInZona[0]);
     } else {
       setSelectedElemento(null);
       setInspectionTargetMode('zona_general');
+    }
+    if (goToForm) {
+      setActiveFieldTab('relevamiento');
     }
   };
 
@@ -633,10 +651,13 @@ export default function CampoPage() {
     });
   };
 
-  // Guardar inspección de Zona o Elemento en IndexedDB y sincronizar con Neon + Backblaze B2
+  // Guardar inspección localmente en IndexedDB (<100ms) y encolar sync en segundo plano
   const handleSaveInspection = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedZona && !selectedElemento) return;
+    if (fotosGaleria.length === 0 && !window.confirm('¿Guardar relevamiento sin evidencia fotográfica?')) {
+      return;
+    }
 
     const targetElemId = inspectionTargetMode === 'elemento' && selectedElemento
       ? selectedElemento.id
@@ -756,8 +777,8 @@ export default function CampoPage() {
       setZonas(await db.zonas.toArray());
     }
 
-    // Guardar en Dexie y disparar subida única de la inspección (y sus fotos a B2)
-    await syncManager.enqueueInspection(nuevaInspeccion);
+    // Guardar en Dexie y encolar subida en segundo plano sin bloquear la UI
+    void syncManager.enqueueInspection(nuevaInspeccion);
 
     // Sincronizar zonas y elementos actualizados (sin reenviar la inspección para evitar doble subida a B2)
     if (typeof navigator !== 'undefined' && navigator.onLine) {
@@ -803,7 +824,9 @@ export default function CampoPage() {
             <HardHat className="w-5 h-5 text-amber-500" />
             <div>
               <span className="font-black text-xs tracking-wider uppercase block leading-none">APP DE CAMPO</span>
-              <span className="text-[10px] text-emerald-400 font-mono">{zonas.length} Zonas · {elementos.length} Hallazgos</span>
+              <span className="text-[10px] text-emerald-400 font-mono">
+                {zonas.length} {zonas.length === 1 ? 'Zona' : 'Zonas'} · {elementos.length} {elementos.length === 1 ? 'Hallazgo' : 'Hallazgos'}
+              </span>
             </div>
           </div>
         </div>
@@ -832,10 +855,11 @@ export default function CampoPage() {
           <button
             type="button"
             onClick={() => setIsQRModalOpen(true)}
+            title="Escanear código QR de equipo o zona"
             className="flex items-center space-x-1 px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-lg shadow transition"
           >
             <QrCode className="w-3.5 h-3.5" />
-            <span>QR</span>
+            <span className="hidden xs:inline">Escanear Zona</span>
           </button>
 
           <button
@@ -857,8 +881,9 @@ export default function CampoPage() {
       )}
 
       <main className="p-3 sm:p-4 max-w-2xl mx-auto w-full space-y-4">
-        {/* PASO 1: SELECCIONAR ZONA DE RECORRIDO (TARJETAS O MAPA TÁCTIL CON GPS) */}
-        <div className="bg-slate-900 border-2 border-sky-500/40 rounded-2xl p-3.5 space-y-3 shadow-xl">
+        {/* VISTA 1: ZONAS Y PLANO (FIN DEL SCROLL INFINITO) */}
+        {activeFieldTab === 'zonas' && (
+          <div className="bg-slate-900 border-2 border-sky-500/40 rounded-2xl p-3.5 space-y-3 shadow-xl">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <span className="text-[10px] font-mono uppercase text-sky-400 font-bold block">
@@ -952,6 +977,28 @@ export default function CampoPage() {
           </div>
           {gpsError && <p className="text-[11px] text-amber-400">{gpsError}</p>}
 
+          {/* Buscador instantáneo + Filtro Solo Pendientes */}
+          <div className="flex flex-col sm:flex-row gap-2 text-xs">
+            <input
+              type="text"
+              value={zonaSearchQuery}
+              onChange={(e) => setZonaSearchQuery(e.target.value)}
+              placeholder="🔍 Buscar zona por código o nombre..."
+              className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:border-sky-400 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => setSoloZonasPendientes(prev => !prev)}
+              className={`px-3 py-2 rounded-lg font-bold border transition flex-shrink-0 ${
+                soloZonasPendientes
+                  ? 'bg-amber-500 text-black border-amber-400'
+                  : 'bg-slate-950 text-slate-300 border-slate-700 hover:border-slate-500'
+              }`}
+            >
+              {soloZonasPendientes ? '✓ Solo Pendientes' : 'Solo Pendientes'}
+            </button>
+          </div>
+
           {/* Filtro Rápido por Área de Planta (ej. Efluentes, Blanqueo, Caustificación...) */}
           {areasDisponibles.length > 0 && (
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px]">
@@ -1032,7 +1079,7 @@ export default function CampoPage() {
                             <button
                               key={z.id}
                               type="button"
-                              onClick={() => handleSelectZonaForTour(z)}
+                              onClick={() => handleSelectZonaForTour(z, elementos, true)}
                               className={`text-left p-3 rounded-xl border transition flex flex-col justify-between ${
                                 isSelected
                                   ? 'bg-sky-950/80 border-sky-400 ring-1 ring-sky-400 shadow-lg'
@@ -1211,9 +1258,33 @@ export default function CampoPage() {
               </div>
             </div>
           )}
+          </div>
+        )}
 
-          {/* Panel de la Zona Actualmente Seleccionada y Selector de Alcance (Zona General vs Hallazgo Puntual) */}
-          {selectedZona && (
+        {/* VISTA 2: RELEVAMIENTO ACTIVO (STICKY HEADER + FOTOS + EVALUACIÓN + GUARDADO LOCAL) */}
+        {activeFieldTab === 'relevamiento' && (
+          <div className="space-y-4">
+            {/* Header sticky de zona activa */}
+            <div className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-md border border-sky-500/50 rounded-xl px-3 py-2 flex items-center justify-between gap-2 shadow-lg text-xs">
+              <div className="min-w-0">
+                <span className="text-[10px] font-mono text-sky-400 font-bold uppercase block">
+                  Relevando {isZoneLocked ? '· 🔒 Fijada' : '· 🔓 Libre'}
+                </span>
+                <span className="font-black text-white truncate block">
+                  {selectedZona ? `${selectedZona.codigo} — ${selectedZona.nombre}` : 'Seleccioná una zona'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveFieldTab('zonas')}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg font-bold flex-shrink-0"
+              >
+                Cambiar
+              </button>
+            </div>
+
+            {/* Panel de la Zona Actualmente Seleccionada y Selector de Alcance */}
+            {selectedZona && (
             <div className="bg-slate-950 p-3 rounded-xl border border-sky-500/40 space-y-2.5 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <div>
@@ -1319,7 +1390,7 @@ export default function CampoPage() {
                     className="w-full sm:w-auto px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-lg text-xs flex items-center justify-center space-x-1 shadow flex-shrink-0"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span className="truncate">+ Agregar Hallazgo en {selectedZona.codigo}</span>
+                    <span className="truncate">Agregar Hallazgo en {selectedZona.codigo}</span>
                   </button>
                 </div>
 
@@ -1454,26 +1525,37 @@ export default function CampoPage() {
               })()}
             </div>
           )}
-        </div>
 
         {/* PASO 2: GALERÍA MULTI-FOTO WEBP Y EVALUACIÓN TÉCNICA */}
         <form onSubmit={handleSaveInspection} className="space-y-4">
           {/* Galería Multi-Foto por Zona / Hallazgo */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-1.5">
-                  <Camera className="w-4 h-4 text-amber-400" />
-                  <span>Galería Fotográfica de la Zona ({fotosGaleria.length} fotos)</span>
-                </span>
-                <span className="text-[10px] text-slate-400 block">
-                  Podés subir múltiples fotos por zona. Cada foto se comprime a WebP (~180KB) y admite dibujo y nota individual.
-                </span>
-              </div>
+            <div>
+              <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-1.5">
+                <Camera className="w-4 h-4 text-amber-400" />
+                <span>Galería Fotográfica ({fotosGaleria.length} {fotosGaleria.length === 1 ? 'foto' : 'fotos'})</span>
+              </span>
+              <span className="text-[10px] text-slate-400 block">
+                Compresión automática a WebP (~180KB) con anotación y nota individual.
+              </span>
+            </div>
 
-              <label className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-lg cursor-pointer flex items-center space-x-1 shadow flex-shrink-0">
-                <Plus className="w-3.5 h-3.5" />
-                <span>+ Agregar Fotos</span>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl cursor-pointer flex items-center justify-center space-x-1.5 shadow transition">
+                <Camera className="w-4 h-4" />
+                <span>Abrir Cámara</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleMultiPhotoUpload}
+                  className="hidden"
+                />
+              </label>
+
+              <label className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-bold text-xs rounded-xl cursor-pointer flex items-center justify-center space-x-1.5 shadow transition">
+                <ImageIcon className="w-4 h-4 text-sky-400" />
+                <span>Galería</span>
                 <input
                   type="file"
                   accept="image/*"
@@ -1490,24 +1572,7 @@ export default function CampoPage() {
               </div>
             )}
 
-            {fotosGaleria.length === 0 ? (
-              <label className="border-2 border-dashed border-slate-700 hover:border-amber-400 rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-950/60 hover:bg-slate-950 transition">
-                <Camera className="w-9 h-9 text-amber-400 mb-2" />
-                <span className="text-sm font-bold text-slate-200">
-                  Tomar Fotos de {inspectionTargetMode === 'elemento' && selectedElemento ? selectedElemento.tag_codigo : selectedZona?.codigo || 'Zona'}
-                </span>
-                <span className="text-xs text-slate-500 mt-1 text-center">
-                  Permite seleccionar o capturar varias fotos seguidas del recorrido
-                </span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleMultiPhotoUpload}
-                  className="hidden"
-                />
-              </label>
-            ) : (
+            {fotosGaleria.length > 0 && (
               <div className="space-y-3">
                 {/* Miniaturas del Carrusel Multi-Foto */}
                 <div className="flex items-center space-x-2 overflow-x-auto pb-1">
@@ -1744,6 +1809,22 @@ export default function CampoPage() {
                 onChange={(e) => setPorcentajeAfectado(Number(e.target.value))}
                 className="w-full accent-amber-500 cursor-pointer"
               />
+              <div className="flex flex-wrap gap-1.5 pt-2">
+                {[5, 10, 20, 30, 50, 75, 100].map(val => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setPorcentajeAfectado(val)}
+                    className={`px-2.5 py-1 rounded-lg font-mono text-xs font-bold border transition ${
+                      porcentajeAfectado === val
+                        ? 'bg-amber-500 text-black border-amber-400'
+                        : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600'
+                    }`}
+                  >
+                    {val}%
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="flex items-center justify-between bg-slate-950 p-3 rounded-lg border border-slate-800">
@@ -1761,46 +1842,57 @@ export default function CampoPage() {
               />
             </div>
 
-            {/* Envejecimiento Estructural y Proyección Temporal */}
+            {/* Parámetros de Proyección (Colapsados por defecto para agilizar en campo) */}
             <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2.5">
-              <span className="text-[11px] font-bold text-sky-400 uppercase tracking-wider block">
-                Parámetros de Envejecimiento (Timeline Futuro)
-              </span>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <div>
-                  <label className="text-[10px] text-slate-400 block mb-1">Antigüedad (años)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={80}
-                    value={antiguedadAnios}
-                    onChange={(e) => setAntiguedadAnios(Math.max(0, Number(e.target.value)))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
-                  />
+              <button
+                type="button"
+                onClick={() => setShowProyeccionParams(prev => !prev)}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <span className="text-[11px] font-bold text-sky-400 uppercase tracking-wider">
+                  ⚙️ Parámetros de Proyección (Opcional)
+                </span>
+                <span className="text-[10px] font-mono text-slate-400">
+                  {antiguedadAnios}a · {ultimoRevestimientoAnios}a · {tasaAvancePct}%/a {showProyeccionParams ? '▲' : '▼'}
+                </span>
+              </button>
+              {showProyeccionParams && (
+                <div className="grid grid-cols-3 gap-2 text-xs pt-2 border-t border-slate-800">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Antigüedad (años)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={80}
+                      value={antiguedadAnios}
+                      onChange={(e) => setAntiguedadAnios(Math.max(0, Number(e.target.value)))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Últ. Pintado (años)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={50}
+                      value={ultimoRevestimientoAnios}
+                      onChange={(e) => setUltimoRevestimientoAnios(Math.max(0, Number(e.target.value)))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Avance (%/año)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={tasaAvancePct}
+                      onChange={(e) => setTasaAvancePct(Math.max(1, Number(e.target.value)))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="text-[10px] text-slate-400 block mb-1">Últ. Pintado (años)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={50}
-                    value={ultimoRevestimientoAnios}
-                    onChange={(e) => setUltimoRevestimientoAnios(Math.max(0, Number(e.target.value)))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-400 block mb-1">Avance (%/año)</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={tasaAvancePct}
-                    onChange={(e) => setTasaAvancePct(Math.max(1, Number(e.target.value)))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-white font-mono"
-                  />
-                </div>
-              </div>
+              )}
             </div>
 
             {/* Muestreo Técnico por Tramo (Normalizado + ISO 12944) */}
@@ -2163,71 +2255,136 @@ export default function CampoPage() {
             )}
           </div>
 
-          {/* Botón Guardar y Sincronizar */}
+          {/* Botón Guardar Local Instantáneo (desacoplado de sync) */}
           <button
             type="submit"
             className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-sm uppercase tracking-wider rounded-xl shadow-xl transition flex items-center justify-center space-x-2"
           >
             <Save className="w-5 h-5" />
             <span>
-              Guardar Relevamiento ({fotosGaleria.length} fotos) y Sincronizar
+              Guardar Relevamiento ({fotosGaleria.length} {fotosGaleria.length === 1 ? 'foto' : 'fotos'})
             </span>
           </button>
         </form>
 
         {savedSuccess && (
           <div className="p-4 bg-emerald-950 border-2 border-emerald-500 rounded-xl text-emerald-300 text-center font-bold text-sm">
-            ✓ ¡Relevamiento guardado y sincronizado con Neon PostgreSQL y Backblaze B2!
+            ✓ ¡Relevamiento guardado localmente en el dispositivo! (La sincronización a Neon y B2 continúa en segundo plano).
+          </div>
+        )}
           </div>
         )}
 
-        {/* Historial de Inspecciones Registradas */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
-              <Clock className="w-4 h-4 text-sky-400" />
-              <span>Historial de Relevamientos ({inspeccionesLocales.length})</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setIsReportModalOpen(true)}
-              className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center space-x-1"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5" />
-              <span>Ver Reporte</span>
-            </button>
-          </div>
+        {/* VISTA 3: HISTORIAL DE RELEVAMIENTOS */}
+        {activeFieldTab === 'historial' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
+                <Clock className="w-4 h-4 text-sky-400" />
+                <span>Historial de Relevamientos ({inspeccionesLocales.length})</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsReportModalOpen(true)}
+                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center space-x-1"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Ver Reporte</span>
+              </button>
+            </div>
 
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {inspeccionesLocales.length === 0 ? (
-              <p className="text-xs text-slate-500 py-2 text-center">Aún no hay inspecciones registradas.</p>
-            ) : (
-              inspeccionesLocales.map((insp) => (
-                <div
-                  key={insp.id}
-                  className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs"
+            <div className="flex items-center gap-1.5 text-[11px]">
+              {(['todos', 'pendiente', 'sincronizado'] as const).map(f => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setHistorialFilter(f)}
+                  className={`px-2.5 py-1 rounded-lg font-bold capitalize border ${
+                    historialFilter === f
+                      ? 'bg-sky-500 text-black border-sky-400'
+                      : 'bg-slate-950 text-slate-400 border-slate-800'
+                  }`}
                 >
-                  <div>
-                    <span className="font-mono font-bold text-amber-400 block">
-                      {insp.zona_codigo ? `[Zona ${insp.zona_codigo}] ` : ''}{insp.elemento_id}
-                    </span>
-                    <span className="text-[10px] text-slate-400">
-                      {insp.grado_corrosion} · {insp.porcentaje_afectado}% afectado · 📸 {insp.fotos?.length || 0} fotos
-                    </span>
-                  </div>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                    insp.estado_sincronizacion === 'sincronizado' 
-                      ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' 
-                      : 'bg-amber-950 text-amber-400 border border-amber-800'
-                  }`}>
-                    {insp.estado_sincronizacion.toUpperCase()}
-                  </span>
-                </div>
-              ))
-            )}
+                  {f === 'todos' ? 'Todos' : f === 'pendiente' ? 'Pendientes de Sync' : 'Sincronizados'}
+                </button>
+              ))}
+            </div>
+
+            <div className="space-y-2 max-h-[65vh] overflow-y-auto">
+              {inspeccionesLocales.filter(i => historialFilter === 'todos' || i.estado_sincronizacion === historialFilter).length === 0 ? (
+                <p className="text-xs text-slate-500 py-4 text-center">No hay inspecciones para este filtro.</p>
+              ) : (
+                inspeccionesLocales
+                  .filter(i => historialFilter === 'todos' || i.estado_sincronizacion === historialFilter)
+                  .map((insp) => (
+                    <div
+                      key={insp.id}
+                      className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs"
+                    >
+                      <div>
+                        <span className="font-mono font-bold text-amber-400 block">
+                          {insp.zona_codigo ? `[Zona ${insp.zona_codigo}] ` : ''}{insp.elemento_id}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {insp.grado_corrosion} · {insp.porcentaje_afectado}% afectado · 📸 {insp.fotos?.length || 0} fotos
+                        </span>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        insp.estado_sincronizacion === 'sincronizado'
+                          ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                          : 'bg-amber-950 text-amber-400 border border-amber-800'
+                      }`}>
+                        {insp.estado_sincronizacion.toUpperCase()}
+                      </span>
+                    </div>
+                  ))
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </main>
+
+      {/* Barra de Navegación Inferior Fija */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-md border-t border-slate-800 px-2 py-1.5">
+        <div className="max-w-2xl mx-auto grid grid-cols-3 gap-1.5 text-xs">
+          <button
+            type="button"
+            onClick={() => setActiveFieldTab('zonas')}
+            className={`py-2 px-2 rounded-xl font-bold flex items-center justify-center space-x-1.5 transition ${
+              activeFieldTab === 'zonas'
+                ? 'bg-sky-500 text-black shadow'
+                : 'text-slate-400 hover:text-white hover:bg-slate-900'
+            }`}
+          >
+            <span>📍</span>
+            <span>Zonas</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFieldTab('relevamiento')}
+            className={`py-2 px-2 rounded-xl font-bold flex items-center justify-center space-x-1.5 transition ${
+              activeFieldTab === 'relevamiento'
+                ? 'bg-amber-500 text-black shadow'
+                : 'text-slate-400 hover:text-white hover:bg-slate-900'
+            }`}
+          >
+            <span>📝</span>
+            <span className="truncate">Relevamiento</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFieldTab('historial')}
+            className={`py-2 px-2 rounded-xl font-bold flex items-center justify-center space-x-1.5 transition ${
+              activeFieldTab === 'historial'
+                ? 'bg-emerald-500 text-black shadow'
+                : 'text-slate-400 hover:text-white hover:bg-slate-900'
+            }`}
+          >
+            <span>📋</span>
+            <span>Historial ({inspeccionesLocales.length})</span>
+          </button>
+        </div>
+      </nav>
 
       {/* Modal de Escaneo QR */}
       <QRScannerModal
@@ -2239,6 +2396,7 @@ export default function CampoPage() {
           setInspectionTargetMode('elemento');
           const z = zonas.find(zn => zn.id === elem.zona_id);
           if (z) setSelectedZona(z);
+          setActiveFieldTab('relevamiento');
         }}
       />
 
