@@ -226,8 +226,19 @@ export default function PlanosIngenieriaPage() {
   });
 
   const zonasFiltradas = zonasPlano.filter(z => {
-    if (filtroNivel === 'todos') return true;
-    return String(z.cota_nivel || 146000) === filtroNivel;
+    if (filtroNivel !== 'todos' && String(z.cota_nivel || 146000) !== filtroNivel) return false;
+    if (
+      currentArea &&
+      currentArea.codigo !== 'PLANTA GENERAL' &&
+      currentPlano?.area_id !== currentArea.id
+    ) {
+      const zArea = (z.area_planta || '').toLowerCase().trim();
+      const targetArea = currentArea.nombre.toLowerCase().trim();
+      if (!zArea || (!zArea.includes(targetArea) && !targetArea.includes(zArea))) {
+        return false;
+      }
+    }
+    return true;
   });
 
   const elementosFiltrados = elementosPlano.filter(e => {

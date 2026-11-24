@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Building2, Plus, Check, Layers, Trash2, MapPin } from 'lucide-react';
 import { Area, ZonaInspeccion } from '../../types';
 import { db } from '../../lib/db';
-import { pushFastSyncToCloud, deleteFromCloud, markLocalEntityPendingPush } from '../../lib/cloudSync';
+import { pushFastSyncToCloud, deleteFromCloud, markLocalEntityPendingPush, markLocalMutation } from '../../lib/cloudSync';
 
 interface AreasManagerModalProps {
   isOpen: boolean;
@@ -60,6 +60,7 @@ export const AreasManagerModal: React.FC<AreasManagerModalProps> = ({
         ubicacion_tecnica_erp: ubicacionErp.trim() || undefined,
         descripcion: descripcion.trim() || undefined
       };
+      markLocalMutation();
       await db.areas.put(nuevaArea);
       setSelectedAreaId(nuevaArea.id);
       setCodigo('');
