@@ -2,62 +2,64 @@ import { db, SyncQueueItem } from './db';
 import { getSyncRequestHeaders } from './security';
 import { Inspeccion } from '../types';
 
-export type SyncState = 
-  | 'idle' 
-  | 'waking_render' 
-  | 'syncing' 
-  | 'error_cold_start' 
-  | 'offline' 
-  | 'success';
+export type SyncState = 'idle' | 'waking_render' | 'syncing' | 'error_cold_start' | 'success' | 'offline';
 
 export interface SyncStatusEvent {
   state: SyncState;
   pendingCount: number;
   message: string;
-  activeItemTag?: string;
   attempt?: number;
   maxAttempts?: number;
+  activeItemTag?: string;
 }
 
 type Listener = (event: SyncStatusEvent) => void;
 
-class SyncManager {
+class OfflineSyncManager {
+  private listeners: Set<Listener> = new Set();
   private isRunning = false;
-  private listeners: Listener[] = [];
-  private apiBaseUrl: string;
 
   constructor() {
-    this.apiBaseUrl = process.env.NEXT_PUBLIC_API_ENGINE_URL || 'http://localhost:8000';
     if (typeof window !== 'undefined') {
-      window.addEventListener('online', () => this.triggerSync());
+      window.addEventListener('online', () => {
+        this.emitCurrentStatus('idle', 'Conexión restablecida. Iniciando sincronización...');
+        this.triggerSync();
+      });
+      window.addEventListener('offline', () => {
+        this.emitCurrentStatus('offline', 'Sin conexión. Modo Offline IndexedDB activo.');
+      });
     }
   }
 
-  public subscribe(listener: Listener) {
-    this.listeners.push(listener);
-    this.emitCurrentStatus('idle', 'Sincronizador en espera');
+  public subscribe(listener: Listener): () => void {
+    this.listeners.add(listener);
+    this.emitCurrentStatus('idle', 'Listo');
     return () => {
-      this.listeners = this.listeners.filter(l => l !== listener);
+      this.listeners.delete(listener);
     };
   }
 
-  private notify(event: SyncStatusEvent) {
+  private async emitCurrentStatus(
+    state: SyncState,
+    message: string,
+    extra?: Partial<SyncStatusEvent>
+  ) {
+    let pendingCount = 0;
+    try {
+      pendingCount = await db.sync_queue.where('estado').notEqual('completado').count();
+    } catch {
+      pendingCount = 0;
+    }
+
+    const event: SyncStatusEvent = {
+      state,
+      pendingCount,
+      message,
+      ...extra
+    };
     this.listeners.forEach(l => l(event));
   }
 
-  private async emitCurrentStatus(state: SyncState, message: string, extra?: Partial<SyncStatusEvent>) {
-    const pending = await db.sync_queue.where('estado').notEqual('completado').count();
-    this.notify({
-      state,
-      pendingCount: pending,
-      message,
-      ...extra
-    });
-  }
-
-  /**
-   * Encola una nueva inspección realizada en campo
-   */
   public async enqueueInspection(inspeccion: Inspeccion): Promise<void> {
     await db.inspecciones.put(inspeccion);
 
@@ -73,15 +75,14 @@ class SyncManager {
 
     await db.sync_queue.put(queueItem);
     await this.emitCurrentStatus('idle', 'Inspección guardada localmente en IndexedDB');
-    
-    // Intenta sincronizar inmediatamente si hay conexión
+
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       this.triggerSync();
     }
   }
 
   /**
-   * Despierta el servidor Render y procesa los pendientes con backoff
+   * Re-encola inspecciones pendientes que no estén en sync_queue y procesa todo hacia Neon + B2
    */
   public async triggerSync(): Promise<void> {
     if (this.isRunning) return;
@@ -93,6 +94,26 @@ class SyncManager {
     this.isRunning = true;
 
     try {
+      // Asegurar que cualquier inspección marcada como 'pendiente' o 'error' tenga su ítem en cola
+      const pendingInsps = await db.inspecciones
+        .where('estado_sincronizacion')
+        .anyOf('pendiente', 'error')
+        .toArray();
+      for (const insp of pendingInsps) {
+        const existing = await db.sync_queue.get(`sync_${insp.id}`);
+        if (!existing || existing.estado === 'completado') {
+          await db.sync_queue.put({
+            id: `sync_${insp.id}`,
+            inspeccion_id: insp.id,
+            payload: insp,
+            estado: 'pendiente',
+            intentos: 0,
+            proximo_reintento: Date.now(),
+            created_at: Date.now()
+          });
+        }
+      }
+
       const items = await db.sync_queue
         .where('estado')
         .notEqual('completado')
@@ -104,42 +125,42 @@ class SyncManager {
         return;
       }
 
-      // Paso 1: Comprobar si Render está dormido (Cold start check)
-      await this.emitCurrentStatus('waking_render', 'Comprobando conexión con servidor Render...', { attempt: 1, maxAttempts: 5 });
-      const serverReady = await this.pingRenderEngineWithColdStartTolerance();
+      let failedCount = 0;
+      let lastErrorMsg = '';
 
-      if (!serverReady) {
-        await this.emitCurrentStatus('error_cold_start', 'El servidor Render está suspendido o iniciando. Se reintentará automáticamente.', { attempt: 1, maxAttempts: 5 });
-        this.isRunning = false;
-        return;
-      }
-
-      // Paso 2: Procesar cada elemento en cola
       for (const item of items) {
-        await this.emitCurrentStatus('syncing', `Subiendo inspección (${item.payload.id.substring(0, 8)})...`, {
-          activeItemTag: item.payload.elemento_id
+        const latestLocal = await db.inspecciones.get(item.inspeccion_id);
+        const payload = latestLocal || item.payload;
+
+        await this.emitCurrentStatus('syncing', `Subiendo ${payload.zona_codigo || payload.id.substring(0, 10)}...`, {
+          activeItemTag: payload.elemento_id
         });
 
-        const success = await this.uploadInspectionToServer(item.payload);
+        const result = await this.uploadInspectionToServer(payload);
 
-        if (success) {
+        if (result.ok) {
           item.estado = 'completado';
+          item.ultimo_error = undefined;
           await db.sync_queue.put(item);
-          // Actualizar estado en tabla local
           await db.inspecciones.update(item.inspeccion_id, {
             estado_sincronizacion: 'sincronizado'
           });
         } else {
+          failedCount++;
+          lastErrorMsg = result.error || 'Error de conexión o límite de tamaño';
           item.intentos += 1;
-          item.ultimo_error = 'Error de conexión o timeout';
-          // Backoff exponencial: 5s, 15s, 45s
+          item.ultimo_error = lastErrorMsg;
           item.proximo_reintento = Date.now() + Math.min(60000, Math.pow(3, item.intentos) * 2000);
-          item.estado = item.intentos >= 5 ? 'fallido' : 'pendiente';
+          item.estado = 'pendiente';
           await db.sync_queue.put(item);
         }
       }
 
-      await this.emitCurrentStatus('success', 'Sincronización completada exitosamente');
+      if (failedCount > 0) {
+        await this.emitCurrentStatus('error_cold_start', `No se pudo subir (${failedCount} pendiente): ${lastErrorMsg}`);
+      } else {
+        await this.emitCurrentStatus('success', 'Sincronización completada exitosamente');
+      }
     } catch (err: any) {
       console.error('Error en SyncManager:', err);
       await this.emitCurrentStatus('error_cold_start', err?.message || 'Error durante la sincronización');
@@ -149,31 +170,85 @@ class SyncManager {
   }
 
   /**
-   * Sincroniza la cola local directly contra Neon Serverless & Backblaze B2 (/api/sync-neon)
+   * Sube primero cada foto individualmente a Backblaze B2 para evitar exceder el límite de 4.5MB de Vercel,
+   * y luego persiste la inspección liviana en Neon PostgreSQL.
    */
-  private async pingRenderEngineWithColdStartTolerance(): Promise<boolean> {
-    return true;
-  }
-
-  /**
-   * Envía la inspección con su galería de fotos WebP comprimidas a Neon + Backblaze B2
-   */
-  private async uploadInspectionToServer(inspeccion: Inspeccion): Promise<boolean> {
+  private async uploadInspectionToServer(inspeccion: Inspeccion): Promise<{ ok: boolean; error?: string }> {
     try {
+      const fotos = Array.isArray(inspeccion.fotos) ? inspeccion.fotos : [];
+      const lightFotos = [];
+
+      for (let idx = 0; idx < fotos.length; idx++) {
+        const f = fotos[idx];
+        let storageUrl = f.storage_url;
+
+        if (!storageUrl && f.thumbnail_data_url && f.thumbnail_data_url.startsWith('data:')) {
+          await this.emitCurrentStatus(
+            'syncing',
+            `Subiendo foto ${idx + 1}/${fotos.length} (${inspeccion.zona_codigo || inspeccion.id.substring(0, 8)})...`
+          );
+
+          const photoRes = await fetch('/api/sync-neon', {
+            method: 'POST',
+            headers: getSyncRequestHeaders(),
+            body: JSON.stringify({
+              uploadPhotoOnly: {
+                inspeccionId: inspeccion.id,
+                fotoIndex: idx + 1,
+                dataUrl: f.thumbnail_data_url
+              }
+            })
+          });
+
+          if (!photoRes.ok) {
+            const errJson = await photoRes.json().catch(() => null);
+            return {
+              ok: false,
+              error: errJson?.error || `HTTP ${photoRes.status} subiendo foto ${idx + 1}`
+            };
+          }
+          const photoJson = await photoRes.json();
+          storageUrl = photoJson.storage_url;
+        }
+
+        lightFotos.push({
+          ...f,
+          storage_url: storageUrl,
+          thumbnail_data_url: storageUrl
+            ? (f.micro_thumbnail_data_url || (f.thumbnail_data_url && f.thumbnail_data_url.length < 35000 ? f.thumbnail_data_url : ''))
+            : f.thumbnail_data_url
+        });
+      }
+
+      const lightInspection: Inspeccion = {
+        ...inspeccion,
+        fotos: lightFotos
+      };
+
       const res = await fetch('/api/sync-neon', {
         method: 'POST',
         headers: getSyncRequestHeaders(),
         body: JSON.stringify({
-          inspecciones: [inspeccion]
+          inspecciones: [lightInspection]
         })
       });
-      if (!res.ok) return false;
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        return {
+          ok: false,
+          error: errJson?.error || `HTTP ${res.status} al guardar inspección`
+        };
+      }
       const data = await res.json();
-      return !!data.success;
-    } catch {
-      return false;
+      if (!data.success) {
+        return { ok: false, error: data.error || 'Respuesta inválida del servidor' };
+      }
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || 'Error de red' };
     }
   }
 }
 
-export const syncManager = new SyncManager();
+export const syncManager = new OfflineSyncManager();

@@ -245,6 +245,26 @@ export async function DELETE(req: NextRequest) {
   try {
     await ensureExtendedSchema();
     const body = await req.json();
+
+    // Modo rápido de subida individual de foto (evita límite 4.5MB de Vercel al subir galerías grandes)
+    if (body?.uploadPhotoOnly) {
+      const { inspeccionId, fotoIndex, dataUrl } = body.uploadPhotoOnly as {
+        inspeccionId?: string;
+        fotoIndex?: number;
+        dataUrl?: string;
+      };
+      if (!isValidEntityId(inspeccionId) || !dataUrl || !dataUrl.startsWith('data:')) {
+        return NextResponse.json({ success: false, error: 'Datos de foto inválidos.' }, { status: 400 });
+      }
+      const validated = validateBase64DataUrl(dataUrl, ALLOWED_PHOTO_MIMES, MAX_PHOTO_UPLOAD_BYTES);
+      if (!validated.valid) {
+        return NextResponse.json({ success: false, error: validated.error }, { status: 400 });
+      }
+      const key = `inspecciones/${inspeccionId}/foto_${Math.max(1, Number(fotoIndex) || 1)}.webp`;
+      const storageUrl = await uploadToB2(key, validated.buffer, validated.mimeType);
+      return NextResponse.json({ success: true, storage_url: storageUrl });
+    }
+
     const { type, id } = body;
 
     if (!type || !isValidEntityId(id)) {
@@ -289,6 +309,26 @@ export async function POST(req: NextRequest) {
     await ensureExtendedSchema();
 
     const body = await req.json();
+
+    // Modo rápido de subida individual de foto (evita límite 4.5MB de Vercel al subir galerías grandes)
+    if (body?.uploadPhotoOnly) {
+      const { inspeccionId, fotoIndex, dataUrl } = body.uploadPhotoOnly as {
+        inspeccionId?: string;
+        fotoIndex?: number;
+        dataUrl?: string;
+      };
+      if (!isValidEntityId(inspeccionId) || !dataUrl || !dataUrl.startsWith('data:')) {
+        return NextResponse.json({ success: false, error: 'Datos de foto inválidos.' }, { status: 400 });
+      }
+      const validated = validateBase64DataUrl(dataUrl, ALLOWED_PHOTO_MIMES, MAX_PHOTO_UPLOAD_BYTES);
+      if (!validated.valid) {
+        return NextResponse.json({ success: false, error: validated.error }, { status: 400 });
+      }
+      const key = `inspecciones/${inspeccionId}/foto_${Math.max(1, Number(fotoIndex) || 1)}.webp`;
+      const storageUrl = await uploadToB2(key, validated.buffer, validated.mimeType);
+      return NextResponse.json({ success: true, storage_url: storageUrl });
+    }
+
     const {
       areas = [],
       planos = [],

@@ -83,8 +83,8 @@ export const SyncStatusBadge: React.FC = () => {
             <>
               <Server className="w-4 h-4 text-amber-400 animate-bounce flex-shrink-0" />
               <div className="flex-1">
-                <span className="font-semibold">Despertando servidor de ingeniería (Render)...</span>
-                <span className="block text-[10px] text-amber-300/80">Tolerancia activa a cold start (~45s). Tus datos están seguros en el dispositivo.</span>
+                <span className="font-semibold">Conectando con servidor Neon &amp; Backblaze B2...</span>
+                <span className="block text-[10px] text-amber-300/80">Tus datos y fotos permanecen seguros en el dispositivo.</span>
               </div>
             </>
           )}
