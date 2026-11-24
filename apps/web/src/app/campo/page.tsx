@@ -1150,6 +1150,30 @@ export default function CampoPage() {
                     );
                   })}
 
+                  {/* Hitos Geográficos / Puntos GPS de Referencia */}
+                  {hitos
+                    .filter(h => !h.plano_id || h.plano_id === currentPlano.id)
+                    .map((hito) => {
+                      const vbW = currentPlano.dimensiones_viewbox?.width || 7680;
+                      const s = Math.max(1, vbW / 900);
+                      const pt = hito.coordenadas_plano || latLngToPixel(hito.lat, hito.lng, geoCal);
+                      return (
+                        <g key={hito.id} transform={`translate(${pt.x}, ${pt.y})`}>
+                          <circle r={9 * s} fill="rgba(16, 185, 129, 0.2)" stroke="#10b981" strokeWidth={1.5 * s} />
+                          <circle r={4 * s} fill="#059669" stroke="#ffffff" strokeWidth={1.2 * s} />
+                          <text
+                            y={-12 * s}
+                            fill="#6ee7b7"
+                            fontSize={10 * s}
+                            fontWeight="bold"
+                            textAnchor="middle"
+                          >
+                            {hito.codigo}
+                          </text>
+                        </g>
+                      );
+                    })}
+
                   {/* Traza del Recorrido GPS del Operario en Campo */}
                   {gpsRouteHistory.length > 1 && (
                     <polyline
@@ -1299,8 +1323,25 @@ export default function CampoPage() {
                   </button>
                 </div>
 
-                {inspectionTargetMode === 'elemento' && selectedElemento && (
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                {inspectionTargetMode === 'elemento' && selectedElemento && (() => {
+                  const ptsZona = selectedZona.poligono_svg?.puntos || [];
+                  const estaDentro = ptsZona.length >= 3
+                    ? isPointInPolygon(selectedElemento.coordenadas_pin, ptsZona)
+                    : true;
+                  return (
+                    <div className="space-y-1.5 pt-1">
+                      <div className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center justify-between ${
+                        estaDentro
+                          ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                          : 'bg-amber-950/60 border-amber-500/60 text-amber-200'
+                      }`}>
+                        <span>
+                          {estaDentro
+                            ? `✓ Pin "${selectedElemento.tag_codigo}" dentro del polígono de ${selectedZona.codigo}`
+                            : `⚠️ Pin "${selectedElemento.tag_codigo}" fuera del polígono de ${selectedZona.codigo} — verificá o reubicá con GPS`}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       onClick={async () => {
@@ -1360,8 +1401,26 @@ export default function CampoPage() {
                       <Trash2 className="w-3 h-3" />
                       <span>Eliminar Pin</span>
                     </button>
-                  </div>
-                )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Hitos GPS de referencia dentro de la zona activa */}
+                {(() => {
+                  const ptsZona = selectedZona.poligono_svg?.puntos || [];
+                  if (ptsZona.length < 3) return null;
+                  const hitosEnZona = hitos.filter(h => {
+                    const pt = h.coordenadas_plano || latLngToPixel(h.lat, h.lng, geoCal);
+                    return isPointInPolygon(pt, ptsZona);
+                  });
+                  if (hitosEnZona.length === 0) return null;
+                  return (
+                    <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 text-[10px] font-mono text-emerald-300">
+                      🚩 Hitos GPS dentro de {selectedZona.codigo}: {hitosEnZona.map(h => h.codigo).join(', ')}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Última Inspección Previa para comparación en terreno */}
