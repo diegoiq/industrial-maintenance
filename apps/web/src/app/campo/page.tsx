@@ -36,7 +36,8 @@ import {
   Moon,
   Mic,
   MicOff,
-  Zap
+  Zap,
+  Eye
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import {
@@ -56,6 +57,8 @@ import { VectorAnnotationCanvas } from '../../components/campo/VectorAnnotationC
 import { QRScannerModal } from '../../components/campo/QRScannerModal';
 import { ReporteRelevamientoModal } from '../../components/campo/ReporteRelevamientoModal';
 import { AjustarZonaCampoModal } from '../../components/campo/AjustarZonaCampoModal';
+import { Iso4628VisualGuideModal } from '../../components/campo/Iso4628VisualGuideModal';
+import { HallazgoExpressDrawer } from '../../components/campo/HallazgoExpressDrawer';
 import { SyncComparatorModal } from '../../components/ingenieria/SyncComparatorModal';
 import { 
   getOrInitGeoreferencia, 
@@ -158,6 +161,14 @@ export default function CampoPage() {
   const [historialFilter, setHistorialFilter] = useState<'todos' | 'pendiente' | 'sincronizado'>('todos');
   const [sunlightMode, setSunlightMode] = useState<boolean>(false);
   const [recoveredDraft, setRecoveredDraft] = useState<boolean>(false);
+  const [isIsoGuideOpen, setIsIsoGuideOpen] = useState<boolean>(false);
+  const [isHallazgoExpressOpen, setIsHallazgoExpressOpen] = useState<boolean>(false);
+  const [areaInheritedNotice, setAreaInheritedNotice] = useState<boolean>(false);
+  const [installPromptEvent, setInstallPromptEvent] = useState<any>(null);
+  const [showInstallBanner, setShowInstallBanner] = useState<boolean>(false);
+  const [wakeLockActive, setWakeLockActive] = useState<boolean>(false);
+  const wakeLockSentinelRef = useRef<any>(null);
+  const [liveSyncEvent, setLiveSyncEvent] = useState<{ state: string; message: string; currentPhoto?: number; totalPhotos?: number } | null>(null);
   const [isDictating, setIsDictating] = useState<boolean>(false);
   const recognitionRef = useRef<any>(null);
   const fabCameraInputRef = useRef<HTMLInputElement | null>(null);
@@ -259,6 +270,18 @@ export default function CampoPage() {
 
   useEffect(() => {
     setCatalogMaterials(loadMaterialsCatalog());
+    const unsubSync = syncManager.subscribe((ev) => {
+      setLiveSyncEvent(ev);
+      if (ev.state === 'success') {
+        db.inspecciones.toArray().then(setInspeccionesLocales).catch(() => null);
+      }
+    });
+    const handleBeforeInstall = (e: any) => {
+      e.preventDefault();
+      setInstallPromptEvent(e);
+      setShowInstallBanner(true);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
     try {
       const sunSaved = window.localStorage.getItem('im_campo_sunlight_mode');
       if (sunSaved === '1') setSunlightMode(true);
@@ -271,6 +294,13 @@ export default function CampoPage() {
     } catch {
       // ignore
     }
+    return () => {
+      unsubSync();
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+      if (wakeLockSentinelRef.current) {
+        wakeLockSentinelRef.current.release().catch(() => null);
+      }
+    };
   }, []);
 
   const handleLogoutCampo = async () => {
@@ -392,6 +422,27 @@ export default function CampoPage() {
       }
       return next;
     });
+  };
+
+  const handleToggleWakeLock = async () => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) {
+      alert('Tu navegador no soporta Wake Lock automático.');
+      return;
+    }
+    if (wakeLockActive && wakeLockSentinelRef.current) {
+      await wakeLockSentinelRef.current.release().catch(() => null);
+      wakeLockSentinelRef.current = null;
+      setWakeLockActive(false);
+      return;
+    }
+    try {
+      const sentinel = await (navigator as any).wakeLock.request('screen');
+      wakeLockSentinelRef.current = sentinel;
+      setWakeLockActive(true);
+      sentinel.addEventListener('release', () => setWakeLockActive(false));
+    } catch {
+      setWakeLockActive(false);
+    }
   };
 
   const saveCurrentDraftNow = async (zonaIdOverride?: string, customFotos?: FotoInspeccionLocal[]) => {
@@ -540,6 +591,22 @@ export default function CampoPage() {
       if (prevZonaInsp.antiguedad_anios) setAntiguedadAnios(prevZonaInsp.antiguedad_anios);
       if (prevZonaInsp.ultimo_revestimiento_anios) setUltimoRevestimientoAnios(prevZonaInsp.ultimo_revestimiento_anios);
       if (prevZonaInsp.tasa_avance_anual_pct) setTasaAvancePct(prevZonaInsp.tasa_avance_anual_pct);
+      setAreaInheritedNotice(false);
+    } else if (!existingDraft) {
+      const areaKey = planos.find(p => p.id === zona.plano_id)?.area_id || selectedAreaId || 'default';
+      try {
+        const rawArea = window.localStorage.getItem(`im_campo_area_defaults_${areaKey}`);
+        if (rawArea) {
+          const parsedArea = JSON.parse(rawArea);
+          if (parsedArea.sustrato) setSustrato(parsedArea.sustrato);
+          if (parsedArea.recubrimiento) setRecubrimiento(parsedArea.recubrimiento);
+          setAreaInheritedNotice(true);
+        } else {
+          setAreaInheritedNotice(false);
+        }
+      } catch {
+        setAreaInheritedNotice(false);
+      }
     }
     const elemsInZona = allElems.filter(e => e.zona_id === zona.id);
     if (elemsInZona.length > 0) {
@@ -767,13 +834,15 @@ export default function CampoPage() {
       for (let i = 0; i < files.length; i++) {
         const result = await compressInspectionPhoto(files[i]);
         setLastCompressionRatio(result.ratioReducedPercent);
+        const stampGps = gpsData ? `${gpsData.lat.toFixed(5)},${gpsData.lng.toFixed(5)}` : 'Sin GPS';
+        const stampMeta = `[${selectedZona?.codigo || 'ZONA'} · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${stampGps} · ${inspectorNombreActivo}]`;
         nuevasFotos.push({
           id: `foto_${Date.now()}_${i}`,
           thumbnail_data_url: result.dataUrl,
           micro_thumbnail_data_url: result.thumbnailDataUrl,
           original_webp_blob: result.blob,
           peso_bytes: result.compressedSizeBytes,
-          comentario: '',
+          comentario: stampMeta,
           anotaciones_canvas: []
         });
       }
@@ -944,6 +1013,15 @@ export default function CampoPage() {
 
     // Guardar en Dexie y encolar subida en segundo plano sin bloquear la UI
     void syncManager.enqueueInspection(nuevaInspeccion);
+    try {
+      const areaKey = (selectedZona ? planos.find(p => p.id === selectedZona.plano_id)?.area_id : undefined) || selectedAreaId || 'default';
+      window.localStorage.setItem(
+        `im_campo_area_defaults_${areaKey}`,
+        JSON.stringify({ sustrato, recubrimiento })
+      );
+    } catch {
+      // ignore
+    }
     if (selectedZona?.id) {
       await db.drafts.delete(selectedZona.id).catch(() => null);
       setRecoveredDraft(false);
@@ -1046,6 +1124,32 @@ export default function CampoPage() {
         <div className="flex items-center space-x-1.5">
           <button
             type="button"
+            onClick={handleCaptureGPS}
+            title={gpsData ? `GPS Activo (±${gpsData.precision_m}m)` : 'Capturar GPS'}
+            className={`px-2 py-1 rounded-lg border text-[10px] font-mono font-bold flex items-center space-x-1 transition ${
+              gpsData
+                ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-300'
+                : 'bg-slate-950 border-slate-700 text-slate-400'
+            }`}
+          >
+            <span>{gpsData ? `🟢 ±${gpsData.precision_m}m` : '⚪ GPS'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleToggleWakeLock}
+            title={wakeLockActive ? 'Pantalla encendida activa (tocar para desactivar)' : 'Mantener pantalla encendida en recorrido'}
+            className={`px-2 py-1 rounded-lg border text-[10px] font-bold transition ${
+              wakeLockActive
+                ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                : 'bg-slate-950 border-slate-700 text-slate-400'
+            }`}
+          >
+            {wakeLockActive ? '🔆 Activa' : '🔅 Pantalla'}
+          </button>
+
+          <button
+            type="button"
             onClick={toggleSunlightMode}
             title={sunlightMode ? 'Cambiar a Modo Oscuro' : 'Cambiar a Modo Luz Solar / Alto Contraste'}
             className={`p-1.5 rounded-lg border transition ${
@@ -1106,6 +1210,34 @@ export default function CampoPage() {
       )}
 
       <main className="p-3 sm:p-4 max-w-2xl mx-auto w-full space-y-4">
+        {showInstallBanner && installPromptEvent && (
+          <div className="bg-indigo-950/80 border border-indigo-500/60 rounded-xl p-3 flex items-center justify-between gap-2 text-xs">
+            <div>
+              <span className="font-bold text-indigo-200 block">📲 Instalar App de Campo (Pantalla Completa)</span>
+              <span className="text-[10px] text-indigo-300/80">Ganá espacio en pantalla y acceso directo offline.</span>
+            </div>
+            <div className="flex items-center space-x-1.5 flex-shrink-0">
+              <button
+                type="button"
+                onClick={async () => {
+                  installPromptEvent.prompt();
+                  await installPromptEvent.userChoice.catch(() => null);
+                  setShowInstallBanner(false);
+                }}
+                className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-400 text-white font-bold rounded-lg"
+              >
+                Instalar
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowInstallBanner(false)}
+                className="px-2 py-1.5 text-indigo-300 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
         {/* VISTA 1: ZONAS Y PLANO (FIN DEL SCROLL INFINITO) */}
         {activeFieldTab === 'zonas' && (
           <div className="bg-slate-900 border-2 border-sky-500/40 rounded-2xl p-3.5 space-y-3 shadow-xl">
@@ -1919,15 +2051,32 @@ export default function CampoPage() {
                   Seleccioná de la lista o elegí &quot;+ Otro / Especificar...&quot; para ingresar cualquier elemento libremente
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsFieldPinModalOpen(true)}
-                className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-[11px] font-bold flex items-center space-x-1"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Nuevo Elemento Libre</span>
-              </button>
+              <div className="flex items-center space-x-1.5">
+                <button
+                  type="button"
+                  onClick={() => setIsHallazgoExpressOpen(true)}
+                  className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-black rounded-lg text-[11px] font-black flex items-center space-x-1 shadow"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>Hallazgo Express</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsFieldPinModalOpen(true)}
+                  className="px-2.5 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-[11px] font-bold flex items-center space-x-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Nuevo</span>
+                </button>
+              </div>
             </div>
+
+            {areaInheritedNotice && (
+              <div className="px-2.5 py-1.5 rounded-lg bg-sky-950/50 border border-sky-500/40 text-[11px] text-sky-300 flex items-center justify-between">
+                <span>✨ Sustrato y recubrimiento sugeridos del último relevamiento en esta Área</span>
+                <button type="button" onClick={() => setAreaInheritedNotice(false)} className="text-sky-400 font-bold ml-2">✕</button>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
               <div className="space-y-1.5">
@@ -2016,7 +2165,17 @@ export default function CampoPage() {
                   <Info className="w-3.5 h-3.5 text-amber-400" />
                   <span>Grado de Corrosión (ISO 4628 / ASTM D610)</span>
                 </label>
-                <span className="font-mono font-bold text-amber-400">{gradoCorrosion}</span>
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsIsoGuideOpen(true)}
+                    className="px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sky-300 text-[11px] font-bold flex items-center space-x-1"
+                  >
+                    <Eye className="w-3 h-3" />
+                    <span>Ver guía visual</span>
+                  </button>
+                  <span className="font-mono font-bold text-amber-400">{gradoCorrosion}</span>
+                </div>
               </div>
 
               <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
@@ -2089,20 +2248,25 @@ export default function CampoPage() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between bg-slate-950 p-3 rounded-lg border border-slate-800">
+            <button
+              type="button"
+              onClick={() => setRequiereReemplazo(prev => !prev)}
+              className={`w-full min-h-[56px] flex items-center justify-between p-3 rounded-xl border text-left transition ${
+                requiereReemplazo
+                  ? 'bg-red-950/40 border-red-500/70'
+                  : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+              }`}
+            >
               <div>
                 <span className="text-xs font-bold text-white block">¿Requiere Reemplazo Estructural / Calderería?</span>
                 <span className="text-[11px] text-slate-400">
                   Activar si hay perforación o pérdida de sección &gt; 25%.
                 </span>
               </div>
-              <input
-                type="checkbox"
-                checked={requiereReemplazo}
-                onChange={(e) => setRequiereReemplazo(e.target.checked)}
-                className="w-5 h-5 accent-red-500 rounded cursor-pointer"
-              />
-            </div>
+              <div className={`w-11 h-6 rounded-full p-0.5 flex-shrink-0 transition ${requiereReemplazo ? 'bg-red-500' : 'bg-slate-700'}`}>
+                <div className={`w-5 h-5 rounded-full bg-white transition-transform ${requiereReemplazo ? 'translate-x-5' : 'translate-x-0'}`} />
+              </div>
+            </button>
 
             {/* Parámetros de Proyección (Colapsados por defecto para agilizar en campo) */}
             <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2.5">
@@ -2158,8 +2322,12 @@ export default function CampoPage() {
             </div>
 
             {/* Muestreo Técnico por Tramo (Normalizado + ISO 12944) */}
-            <div className="bg-slate-950 p-3 rounded-xl border border-emerald-500/40 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
+            <div className={`rounded-xl border space-y-2.5 transition ${usarMuestreoTramo ? 'bg-slate-950 border-emerald-500/70 p-3' : 'bg-slate-950 border-emerald-500/30 p-3'}`}>
+              <button
+                type="button"
+                onClick={() => setUsarMuestreoTramo(prev => !prev)}
+                className="w-full min-h-[48px] flex items-center justify-between gap-2 text-left"
+              >
                 <div>
                   <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider block">
                     Muestreo Técnico por Tramo (ISO 12944)
@@ -2168,13 +2336,10 @@ export default function CampoPage() {
                     Normaliza extensión por unidades en tramo (3m / 5m) + severidad morfológica
                   </span>
                 </div>
-                <input
-                  type="checkbox"
-                  checked={usarMuestreoTramo}
-                  onChange={(e) => setUsarMuestreoTramo(e.target.checked)}
-                  className="w-4 h-4 accent-emerald-500 cursor-pointer"
-                />
-              </div>
+                <div className={`w-11 h-6 rounded-full p-0.5 flex-shrink-0 transition ${usarMuestreoTramo ? 'bg-emerald-500' : 'bg-slate-700'}`}>
+                  <div className={`w-5 h-5 rounded-full bg-white transition-transform ${usarMuestreoTramo ? 'translate-x-5' : 'translate-x-0'}`} />
+                </div>
+              </button>
 
               {usarMuestreoTramo && (() => {
                 const prevHistorial = inspeccionesLocales.filter(i =>
@@ -2287,32 +2452,47 @@ export default function CampoPage() {
             </div>
 
             {/* SUB-SECCIÓN: EVALUACIONES CIVILES (Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas) */}
-            <div className="bg-slate-950 border border-amber-500/40 rounded-xl p-3.5 space-y-3">
-              <div className="flex items-center justify-between gap-2">
+            <div className={`border rounded-xl p-3.5 space-y-3 transition ${incluirEvaluacionCivil ? 'bg-slate-950 border-amber-500/70' : 'bg-slate-950 border-amber-500/30'}`}>
+              <button
+                type="button"
+                onClick={() => setIncluirEvaluacionCivil(prev => !prev)}
+                className="w-full min-h-[48px] flex items-center justify-between gap-2 text-left"
+              >
                 <div className="flex items-center space-x-2">
-                  <Building2 className="w-4 h-4 text-amber-400" />
+                  <Building2 className="w-4 h-4 text-amber-400 flex-shrink-0" />
                   <div>
                     <span className="text-xs font-black text-white uppercase tracking-wide block">
-                      Sub-sección: Evaluaciones Civiles y Hormigón
+                      Evaluaciones Civiles y Hormigón
                     </span>
                     <span className="text-[10px] text-slate-400">
-                      Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas u otros elementos civiles
+                      Juntas, Tabiques, Columnas, Vigas, Losas, Bases de Bombas
                     </span>
                   </div>
                 </div>
-                <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-900 px-2.5 py-1.5 rounded-lg border border-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={incluirEvaluacionCivil}
-                    onChange={(e) => setIncluirEvaluacionCivil(e.target.checked)}
-                    className="accent-amber-500 rounded"
-                  />
-                  <span className="text-xs font-bold text-amber-400">Evaluar Civil</span>
-                </label>
-              </div>
+                <div className={`w-11 h-6 rounded-full p-0.5 flex-shrink-0 transition ${incluirEvaluacionCivil ? 'bg-amber-500' : 'bg-slate-700'}`}>
+                  <div className={`w-5 h-5 rounded-full bg-white transition-transform ${incluirEvaluacionCivil ? 'translate-x-5' : 'translate-x-0'}`} />
+                </div>
+              </button>
 
               {incluirEvaluacionCivil && (
                 <div className="space-y-3 pt-2 border-t border-slate-800 text-xs">
+                  <div>
+                    <span className="text-[11px] text-slate-300 font-semibold block mb-1.5">
+                      Patologías rápidas (1 toque):
+                    </span>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {['Fisuras', 'Desprendimiento', 'Armadura expuesta', 'Juntas degradadas', 'Base de bomba'].map(pat => (
+                        <button
+                          key={pat}
+                          type="button"
+                          onClick={() => setNotasCiviles(prev => (prev ? `${prev.trim()} · ${pat}` : pat))}
+                          className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-[10px] font-bold"
+                        >
+                          + {pat}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div>
                     <span className="text-[11px] text-slate-300 font-semibold block mb-1.5">
                       1. Seleccioná los elementos civiles a relevar (o agregá uno propio):
@@ -2640,15 +2820,48 @@ export default function CampoPage() {
                 <Clock className="w-4 h-4 text-sky-400" />
                 <span>Historial de Relevamientos ({inspeccionesLocales.length})</span>
               </span>
-              <button
-                type="button"
-                onClick={() => setIsReportModalOpen(true)}
-                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center space-x-1"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Ver Reporte</span>
-              </button>
+              <div className="flex items-center space-x-1.5">
+                {inspeccionesLocales.some(i => i.estado_sincronizacion !== 'sincronizado') && (
+                  <button
+                    type="button"
+                    onClick={() => syncManager.triggerSync()}
+                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold flex items-center space-x-1"
+                  >
+                    <CloudUpload className="w-3.5 h-3.5" />
+                    <span>Reintentar fallidos</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsReportModalOpen(true)}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center space-x-1"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Ver Reporte</span>
+                </button>
+              </div>
             </div>
+
+            {liveSyncEvent && liveSyncEvent.state === 'syncing' && (
+              <div className="p-2.5 rounded-xl bg-indigo-950/60 border border-indigo-500/50 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between text-indigo-200 font-semibold">
+                  <span>{liveSyncEvent.message}</span>
+                  {liveSyncEvent.totalPhotos ? (
+                    <span className="font-mono text-[11px]">
+                      {liveSyncEvent.currentPhoto || 0}/{liveSyncEvent.totalPhotos}
+                    </span>
+                  ) : null}
+                </div>
+                {liveSyncEvent.totalPhotos ? (
+                  <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-400 transition-all"
+                      style={{ width: `${Math.min(100, Math.round(((liveSyncEvent.currentPhoto || 0) / liveSyncEvent.totalPhotos) * 100))}%` }}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            )}
 
             <div className="flex items-center gap-1.5 text-[11px]">
               {(['todos', 'pendiente', 'sincronizado'] as const).map(f => (
@@ -2773,6 +2986,58 @@ export default function CampoPage() {
           </button>
         </>
       )}
+
+      {/* Guía Visual Offline ISO 4628 / ASTM D610 */}
+      <Iso4628VisualGuideModal
+        isOpen={isIsoGuideOpen}
+        onClose={() => setIsIsoGuideOpen(false)}
+        currentGrade={gradoCorrosion}
+        onSelectGrade={(g) => setGradoCorrosion(g)}
+      />
+
+      {/* Drawer Express de Hallazgo Puntual (4 pasos rápidos) */}
+      <HallazgoExpressDrawer
+        isOpen={isHallazgoExpressOpen}
+        onClose={() => setIsHallazgoExpressOpen(false)}
+        zonaCodigo={selectedZona?.codigo || 'GENERAL'}
+        onSaveExpress={async (data) => {
+          const newElemId = `elem_${Date.now()}`;
+          const newElem: Elemento = {
+            id: newElemId,
+            zona_id: selectedZona?.id || '',
+            tag_codigo: data.tagCodigo,
+            qr_token: `QR-${data.tagCodigo}`,
+            tipo_elemento: data.tipoElemento,
+            coordenadas_pin: gpsData?.pixelX && gpsData?.pixelY
+              ? { x: Math.round(gpsData.pixelX), y: Math.round(gpsData.pixelY) }
+              : { x: 500, y: 500 },
+            geometria_parametros: { longitud_m: 1, m2_superficie: 1, peso_kg: 10 },
+            criticidad_activo: data.requiereReemplazo ? 5 : 3,
+            estado_actual: data.requiereReemplazo || data.gradoCorrosion === 'Ri 5' ? 'rojo' : data.gradoCorrosion === 'Ri 4' ? 'naranja' : 'amarillo'
+          };
+          await db.elementos.put(newElem);
+          const insp: Inspeccion = {
+            id: `insp_${Date.now()}`,
+            elemento_id: newElemId,
+            zona_id: selectedZona?.id,
+            zona_codigo: selectedZona?.codigo,
+            inspector_nombre: inspectorNombreActivo,
+            fecha_inspeccion: new Date().toISOString(),
+            estado_sincronizacion: 'pendiente',
+            clasificacion_sustrato: sustrato,
+            clasificacion_recubrimiento: recubrimiento,
+            grado_corrosion: data.gradoCorrosion,
+            requiere_reemplazo: data.requiereReemplazo,
+            porcentaje_afectado: data.gradoCorrosion === 'Ri 5' ? 60 : data.gradoCorrosion === 'Ri 4' ? 35 : 15,
+            criticidad_calculada: data.requiereReemplazo ? 5 : 3,
+            observaciones: data.observaciones,
+            fotos: data.fotos.map(f => ({ ...f, original_webp_blob: undefined }))
+          };
+          void syncManager.enqueueInspection(insp);
+          setElementos(await db.elementos.toArray());
+          setInspeccionesLocales(await db.inspecciones.toArray());
+        }}
+      />
 
       {/* Modal de Escaneo QR */}
       <QRScannerModal

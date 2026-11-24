@@ -1,0 +1,19 @@
+{
+  "name": "Industrial Maintenance — App de Campo",
+  "short_name": "Campo IM",
+  "description": "PWA de relevamiento industrial, corrosión ISO 4628 y cubicación offline en planta.",
+  "start_url": "/campo",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#090d16",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

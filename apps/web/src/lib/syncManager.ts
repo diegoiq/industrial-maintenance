@@ -11,6 +11,9 @@ export interface SyncStatusEvent {
   attempt?: number;
   maxAttempts?: number;
   activeItemTag?: string;
+  activeInspeccionId?: string;
+  currentPhoto?: number;
+  totalPhotos?: number;
 }
 
 type Listener = (event: SyncStatusEvent) => void;
@@ -170,55 +173,85 @@ class OfflineSyncManager {
   }
 
   /**
-   * Sube primero cada foto individualmente a Backblaze B2 para evitar exceder el límite de 4.5MB de Vercel,
-   * y luego persiste la inspección liviana en Neon PostgreSQL.
+   * Estrategia Two-Phase Sync:
+   * Fase A: Sube primero el JSON liviano de la inspección a Neon (confirmación rápida incluso con señal débil).
+   * Fase B: Sube las fotos WebP a Backblaze B2 en lotes de máximo 2 en paralelo y actualiza las storage_url en Neon.
    */
   private async uploadInspectionToServer(inspeccion: Inspeccion): Promise<{ ok: boolean; error?: string }> {
     try {
       const fotos = Array.isArray(inspeccion.fotos) ? inspeccion.fotos : [];
-      const lightFotos = [];
 
-      for (let idx = 0; idx < fotos.length; idx++) {
+      // Fase A: Guardar primero el registro liviano en Neon sin los dataUrl pesados
+      const skeletonFotos = fotos.map(f => ({
+        ...f,
+        thumbnail_data_url: f.storage_url ? (f.micro_thumbnail_data_url || '') : (f.micro_thumbnail_data_url || '')
+      }));
+
+      await fetch('/api/sync-neon', {
+        method: 'POST',
+        headers: getSyncRequestHeaders(),
+        body: JSON.stringify({
+          inspecciones: [{ ...inspeccion, fotos: skeletonFotos }]
+        })
+      }).catch(() => null);
+
+      // Fase B: Subir fotos a Backblaze B2 en cola con máximo 2 en paralelo
+      const resolvedUrls: (string | undefined)[] = fotos.map(f => f.storage_url);
+      let completedPhotos = 0;
+
+      const uploadOnePhoto = async (idx: number): Promise<string | undefined> => {
         const f = fotos[idx];
-        let storageUrl = f.storage_url;
-
-        if (!storageUrl && f.thumbnail_data_url && f.thumbnail_data_url.startsWith('data:')) {
-          await this.emitCurrentStatus(
-            'syncing',
-            `Subiendo foto ${idx + 1}/${fotos.length} (${inspeccion.zona_codigo || inspeccion.id.substring(0, 8)})...`
-          );
-
-          const photoRes = await fetch('/api/sync-neon', {
-            method: 'POST',
-            headers: getSyncRequestHeaders(),
-            body: JSON.stringify({
-              uploadPhotoOnly: {
-                inspeccionId: inspeccion.id,
-                fotoIndex: idx + 1,
-                dataUrl: f.thumbnail_data_url
-              }
-            })
-          });
-
-          if (!photoRes.ok) {
-            const errJson = await photoRes.json().catch(() => null);
-            return {
-              ok: false,
-              error: errJson?.error || `HTTP ${photoRes.status} subiendo foto ${idx + 1}`
-            };
-          }
-          const photoJson = await photoRes.json();
-          storageUrl = photoJson.storage_url;
+        if (f.storage_url || !f.thumbnail_data_url || !f.thumbnail_data_url.startsWith('data:')) {
+          return f.storage_url;
         }
+        const photoRes = await fetch('/api/sync-neon', {
+          method: 'POST',
+          headers: getSyncRequestHeaders(),
+          body: JSON.stringify({
+            uploadPhotoOnly: {
+              inspeccionId: inspeccion.id,
+              fotoIndex: idx + 1,
+              dataUrl: f.thumbnail_data_url
+            }
+          })
+        });
+        if (!photoRes.ok) {
+          const errJson = await photoRes.json().catch(() => null);
+          throw new Error(errJson?.error || `HTTP ${photoRes.status} subiendo foto ${idx + 1}`);
+        }
+        const photoJson = await photoRes.json();
+        completedPhotos++;
+        await this.emitCurrentStatus(
+          'syncing',
+          `Subiendo foto ${completedPhotos} de ${fotos.length} (${inspeccion.zona_codigo || inspeccion.id.substring(0, 8)})...`,
+          {
+            activeInspeccionId: inspeccion.id,
+            currentPhoto: completedPhotos,
+            totalPhotos: fotos.length
+          }
+        );
+        return photoJson.storage_url;
+      };
 
-        lightFotos.push({
+      for (let i = 0; i < fotos.length; i += 2) {
+        const batchIndices = [i];
+        if (i + 1 < fotos.length) batchIndices.push(i + 1);
+        const batchUrls = await Promise.all(batchIndices.map(idx => uploadOnePhoto(idx)));
+        batchIndices.forEach((idx, bIdx) => {
+          resolvedUrls[idx] = batchUrls[bIdx];
+        });
+      }
+
+      const lightFotos = fotos.map((f, idx) => {
+        const storageUrl = resolvedUrls[idx];
+        return {
           ...f,
           storage_url: storageUrl,
           thumbnail_data_url: storageUrl
             ? (f.micro_thumbnail_data_url || (f.thumbnail_data_url && f.thumbnail_data_url.length < 35000 ? f.thumbnail_data_url : ''))
             : f.thumbnail_data_url
-        });
-      }
+        };
+      });
 
       const lightInspection: Inspeccion = {
         ...inspeccion,
