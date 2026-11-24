@@ -3,6 +3,7 @@ import { getSyncRequestHeaders } from './security';
 
 const PENDING_ZONAS_KEY = 'im_pending_zonas_ids';
 const PENDING_HITOS_KEY = 'im_pending_hitos_ids';
+const PENDING_AREAS_KEY = 'im_pending_areas_ids';
 
 let isSyncInFlight = false;
 let lastLocalMutationAt = 0;
@@ -31,9 +32,9 @@ function savePendingIds(storageKey: string, ids: Set<string>) {
  * Marca una zona o hito recién creado/editado localmente como "Pendiente de Subir"
  * para que ningún polling automático lo borre antes de que llegue a Neon.
  */
-export function markLocalEntityPendingPush(type: 'zona' | 'hito', id: string) {
+export function markLocalEntityPendingPush(type: 'zona' | 'hito' | 'area', id: string) {
   lastLocalMutationAt = Date.now();
-  const key = type === 'zona' ? PENDING_ZONAS_KEY : PENDING_HITOS_KEY;
+  const key = type === 'zona' ? PENDING_ZONAS_KEY : type === 'hito' ? PENDING_HITOS_KEY : PENDING_AREAS_KEY;
   const set = getPendingIds(key);
   set.add(id);
   savePendingIds(key, set);
@@ -298,6 +299,10 @@ export async function deleteFromCloud(type: 'zona' | 'elemento' | 'hito' | 'plan
     const pendingH = getPendingIds(PENDING_HITOS_KEY);
     pendingH.delete(id);
     savePendingIds(PENDING_HITOS_KEY, pendingH);
+  } else if (type === 'area') {
+    const pendingA = getPendingIds(PENDING_AREAS_KEY);
+    pendingA.delete(id);
+    savePendingIds(PENDING_AREAS_KEY, pendingA);
   }
   try {
     await fetch('/api/sync-neon', {
@@ -337,13 +342,19 @@ export async function pullAndReconcileFromCloud(options: { forceFullPlanDownload
     const pendingZonas = getPendingIds(PENDING_ZONAS_KEY);
     const pendingHitos = getPendingIds(PENDING_HITOS_KEY);
 
-    // 1. Reconciliar Áreas
+    // 1. Reconciliar Áreas (respetando áreas locales pendientes de subir)
     if (areas.length > 0) {
       const cloudAreaIds = new Set(areas.map((a: any) => a.id));
+      const pendingAreas = getPendingIds(PENDING_AREAS_KEY);
       const localAreas = await db.areas.toArray();
       for (const la of localAreas) {
-        if (!cloudAreaIds.has(la.id)) await db.areas.delete(la.id);
+        if (!cloudAreaIds.has(la.id) && !pendingAreas.has(la.id)) {
+          await db.areas.delete(la.id);
+        } else if (cloudAreaIds.has(la.id) && pendingAreas.has(la.id)) {
+          pendingAreas.delete(la.id);
+        }
       }
+      savePendingIds(PENDING_AREAS_KEY, pendingAreas);
       for (const a of areas) await db.areas.put(a);
     }
 

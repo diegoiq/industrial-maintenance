@@ -60,7 +60,7 @@ export const AreasManagerModal: React.FC<AreasManagerModalProps> = ({
         ubicacion_tecnica_erp: ubicacionErp.trim() || undefined,
         descripcion: descripcion.trim() || undefined
       };
-      markLocalMutation();
+      markLocalEntityPendingPush('area', nuevaArea.id);
       await db.areas.put(nuevaArea);
       setSelectedAreaId(nuevaArea.id);
       setCodigo('');

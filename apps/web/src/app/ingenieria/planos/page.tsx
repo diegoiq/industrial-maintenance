@@ -136,11 +136,16 @@ export default function PlanosIngenieriaPage() {
     let loadedHitos = await db.hitos.toArray();
     let loadedInspecciones = await db.inspecciones.toArray();
 
-    // Purgar áreas semilla ficticias (131, 411, 471) que no tengan ningún plano vinculado
+    // Purgar únicamente los UUIDs semilla iniciales si no tienen plano vinculado
     if (loadedPlanos.length > 0) {
       const usedAreaIds = new Set(loadedPlanos.map(p => p.area_id));
+      const SEED_AREA_IDS = [
+        '35a9360f-48db-4bbd-8ef6-c920d5da9e75',
+        '5aed1762-75a2-46c4-89c6-924ab3697b70',
+        '8ea03de9-f30c-49ed-93ad-39ffa4f64c21'
+      ];
       for (const a of loadedAreas) {
-        if (!usedAreaIds.has(a.id) && ['131', '411', '471'].includes(a.codigo)) {
+        if (!usedAreaIds.has(a.id) && SEED_AREA_IDS.includes(a.id)) {
           await db.areas.delete(a.id);
         }
       }
