@@ -48,6 +48,7 @@ export const EditZoneModal: React.FC<EditZoneModalProps> = ({
   const [nombre, setNombre] = useState('');
   const [areaPlanta, setAreaPlanta] = useState('Efluentes');
   const [customAreaPlanta, setCustomAreaPlanta] = useState('');
+  const [areasOpciones, setAreasOpciones] = useState<string[]>(AREAS_PLANTA_SUGERIDAS);
   const [cotaNivel, setCotaNivel] = useState<number>(146000);
   const [disciplinas, setDisciplinas] = useState<DisciplinaZona[]>([]);
   const [saludApriori, setSaludApriori] = useState<'bueno' | 'regular' | 'malo' | 'critico'>('regular');
@@ -62,19 +63,30 @@ export const EditZoneModal: React.FC<EditZoneModalProps> = ({
   const [requiereParada, setRequiereParada] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Cargar datos actuales de la zona
+  // Cargar datos actuales de la zona + áreas dinámicas de db.areas
   useEffect(() => {
-    if (zona) {
-      setCodigo(zona.codigo || '');
-      setNombre(zona.nombre || '');
+    if (!zona) return;
+    db.areas.toArray().then(dbAreas => {
+      const merged = Array.from(new Set([
+        ...AREAS_PLANTA_SUGERIDAS,
+        ...dbAreas.map(a => a.nombre)
+      ]));
+      setAreasOpciones(merged);
       const existingArea = zona.area_planta || 'Efluentes';
-      if (AREAS_PLANTA_SUGERIDAS.includes(existingArea)) {
+      if (merged.includes(existingArea)) {
         setAreaPlanta(existingArea);
         setCustomAreaPlanta('');
       } else {
         setAreaPlanta('__custom__');
         setCustomAreaPlanta(existingArea);
       }
+    }).catch(() => null);
+  }, [zona]);
+
+  useEffect(() => {
+    if (zona) {
+      setCodigo(zona.codigo || '');
+      setNombre(zona.nombre || '');
       setCotaNivel(zona.cota_nivel || 146000);
       setDisciplinas(zona.disciplinas_involucradas || ['estructuras_acero']);
       setSaludApriori(zona.estado_salud_apriori || 'regular');
@@ -229,7 +241,7 @@ export const EditZoneModal: React.FC<EditZoneModalProps> = ({
                 onChange={(e) => setAreaPlanta(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-emerald-300 font-bold focus:border-emerald-400 focus:outline-none"
               >
-                {AREAS_PLANTA_SUGERIDAS.map(a => (
+                {areasOpciones.map(a => (
                   <option key={a} value={a}>{a}</option>
                 ))}
                 <option value="__custom__">➕ Otra Área / Escribir...</option>

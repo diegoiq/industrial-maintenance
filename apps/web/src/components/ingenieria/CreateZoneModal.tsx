@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Layers, X, CheckCircle2, AlertCircle, Building2, HardHat, ShieldAlert, Ruler } from 'lucide-react';
 import { ZonaInspeccion, DisciplinaZona } from '../../types';
 import { db } from '../../lib/db';
@@ -10,6 +10,7 @@ interface CreateZoneModalProps {
   onClose: () => void;
   currentPlanoId: string;
   defaultPoints?: { x: number; y: number }[];
+  defaultAreaPlanta?: string;
   onZoneCreated: (newZone: ZonaInspeccion) => void;
 }
 
@@ -44,12 +45,34 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
   onClose,
   currentPlanoId,
   defaultPoints,
+  defaultAreaPlanta,
   onZoneCreated
 }) => {
   const [codigo, setCodigo] = useState('');
   const [nombre, setNombre] = useState('');
-  const [areaPlanta, setAreaPlanta] = useState('Efluentes');
+  const [areaPlanta, setAreaPlanta] = useState(defaultAreaPlanta || 'Efluentes');
   const [customAreaPlanta, setCustomAreaPlanta] = useState('');
+  const [areasOpciones, setAreasOpciones] = useState<string[]>(AREAS_PLANTA_SUGERIDAS);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    db.areas.toArray().then(dbAreas => {
+      const merged = Array.from(new Set([
+        ...AREAS_PLANTA_SUGERIDAS,
+        ...dbAreas.map(a => a.nombre)
+      ]));
+      setAreasOpciones(merged);
+      if (defaultAreaPlanta) {
+        if (merged.includes(defaultAreaPlanta)) {
+          setAreaPlanta(defaultAreaPlanta);
+          setCustomAreaPlanta('');
+        } else {
+          setAreaPlanta('__custom__');
+          setCustomAreaPlanta(defaultAreaPlanta);
+        }
+      }
+    }).catch(() => null);
+  }, [isOpen, defaultAreaPlanta]);
   const [cotaNivel, setCotaNivel] = useState<number>(146000);
   const [disciplinas, setDisciplinas] = useState<DisciplinaZona[]>([
     'estructuras_acero',
@@ -210,7 +233,7 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
                 onChange={(e) => setAreaPlanta(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-emerald-300 font-bold focus:border-emerald-400 focus:outline-none"
               >
-                {AREAS_PLANTA_SUGERIDAS.map(a => (
+                {areasOpciones.map(a => (
                   <option key={a} value={a}>{a}</option>
                 ))}
                 <option value="__custom__">➕ Otra Área / Escribir...</option>

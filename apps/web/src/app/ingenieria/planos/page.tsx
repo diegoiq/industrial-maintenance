@@ -29,6 +29,7 @@ import { CreateHitoModal } from '../../../components/ingenieria/CreateHitoModal'
 import { ReporteRelevamientoModal } from '../../../components/campo/ReporteRelevamientoModal';
 import { HitosMapsModal } from '../../../components/ingenieria/HitosMapsModal';
 import { SyncComparatorModal } from '../../../components/ingenieria/SyncComparatorModal';
+import { AreasManagerModal } from '../../../components/ingenieria/AreasManagerModal';
 import { db } from '../../../lib/db';
 import { getSyncRequestHeaders } from '../../../lib/security';
 import { getOrInitGeoreferencia, getPolygonCentroid, latLngToPixel, pixelToLatLng } from '../../../lib/georeferenceEngine';
@@ -113,6 +114,8 @@ export default function PlanosIngenieriaPage() {
   const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
   const [isHitosModalOpen, setIsHitosModalOpen] = useState<boolean>(false);
   const [isSyncComparatorOpen, setIsSyncComparatorOpen] = useState<boolean>(false);
+  const [isAreasModalOpen, setIsAreasModalOpen] = useState<boolean>(false);
+  const [defaultAreaForNewZone, setDefaultAreaForNewZone] = useState<string | undefined>(undefined);
   const [isCreateZoneModalOpen, setIsCreateZoneModalOpen] = useState<boolean>(false);
   const [isEditZoneModalOpen, setIsEditZoneModalOpen] = useState<boolean>(false);
   const [zoneToEdit, setZoneToEdit] = useState<ZonaInspeccion | undefined>(undefined);
@@ -591,6 +594,13 @@ export default function PlanosIngenieriaPage() {
             {isMenuOpen && (
               <div className="absolute right-0 top-full mt-1.5 w-56 bg-slate-900 border border-slate-700/90 rounded-xl shadow-2xl py-1 text-xs text-slate-200 z-50 divide-y divide-slate-800 animate-in fade-in zoom-in-95">
                 <div className="py-1">
+                  <button
+                    onClick={() => { setIsAreasModalOpen(true); setIsMenuOpen(false); }}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-slate-800 text-left text-slate-200 hover:text-white"
+                  >
+                    <Building2 className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Gestionar Áreas y Zonas</span>
+                  </button>
                   <button
                     onClick={() => { setIsHitosModalOpen(true); setIsMenuOpen(false); }}
                     className="w-full flex items-center space-x-2.5 px-3 py-2 hover:bg-slate-800 text-left text-slate-200 hover:text-white"
@@ -1166,18 +1176,40 @@ export default function PlanosIngenieriaPage() {
         onClose={() => {
           setIsCreateZoneModalOpen(false);
           setCustomPolygonPoints(undefined);
+          setDefaultAreaForNewZone(undefined);
         }}
         currentPlanoId={selectedPlanoId}
         defaultPoints={customPolygonPoints}
+        defaultAreaPlanta={defaultAreaForNewZone}
         onZoneCreated={(newZone) => {
           markLocalEntityPendingPush('zona', newZone.id);
           reloadFromDB();
           setSelectedZona(newZone);
           setIsCreateZoneModalOpen(false);
           setCustomPolygonPoints(undefined);
+          setDefaultAreaForNewZone(undefined);
           pushFastSyncToCloud({ authoritativeZonas: true });
           setNotification(`Zona "${newZone.codigo}" creada y sincronizada con la nube.`);
           setTimeout(() => setNotification(null), 3000);
+        }}
+      />
+
+      <AreasManagerModal
+        isOpen={isAreasModalOpen}
+        onClose={() => setIsAreasModalOpen(false)}
+        areas={areas}
+        zonas={zonas}
+        currentPlanoId={selectedPlanoId}
+        onUpdated={reloadFromDB}
+        onStartDrawZoneInArea={(areaNombre) => {
+          setDefaultAreaForNewZone(areaNombre);
+          setActiveMode('add_zone');
+          setNotification(`Trazá los vértices de la nueva zona para el área "${areaNombre}" sobre el plano.`);
+        }}
+        onOpenCreateZoneInArea={(areaNombre) => {
+          setDefaultAreaForNewZone(areaNombre);
+          setCustomPolygonPoints(undefined);
+          setIsCreateZoneModalOpen(true);
         }}
       />
 
