@@ -13,6 +13,7 @@ import {
   FileSpreadsheet,
   Sparkles,
   LayoutDashboard,
+  Filter,
   Menu,
   X,
   ChevronLeft,
@@ -70,6 +71,12 @@ export default function IngenieriaLayout({
       href: '/ingenieria/planos',
       icon: Map,
       description: 'Visor SVG y semáforo de activos'
+    },
+    {
+      name: 'Análisis por Área / Zona',
+      href: '/ingenieria/analisis',
+      icon: Filter,
+      description: 'Anticorrosivo, reparaciones y reemplazos'
     },
     {
       name: 'Parámetros y Cubicaciones',
