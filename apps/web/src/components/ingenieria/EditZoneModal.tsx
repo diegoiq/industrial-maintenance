@@ -24,8 +24,14 @@ const DISCIPLINAS_DISPONIBLES: { id: DisciplinaZona; label: string }[] = [
   { id: 'parral_canerias', label: 'Parral de Cañerías (Pipe-Rack)' },
   { id: 'soportes', label: 'Soportes de Cañería y Silletas' },
   { id: 'canerias_proceso', label: 'Cañerías de Proceso / Vapor' },
+  { id: 'equipos_proceso', label: 'Equipos Rotativos / Proceso (Bombas/Agitadores)' },
+  { id: 'tanques_silos', label: 'Tanques, Silos y Recipientes' },
+  { id: 'cerramientos_cubiertas', label: 'Cerramientos, Chapas y Cubiertas' },
+  { id: 'bandejas_electricas', label: 'Bandejas Eléctricas e Instrumentación' },
+  { id: 'puentes_grua_escaleras', label: 'Puentes Grúa, Monorrieles y Escaleras' },
   { id: 'columnas_hormigon', label: 'Columnas y Pedestales de Hormigón' },
-  { id: 'barandas_plataformas', label: 'Barandas y Pisos Grating' }
+  { id: 'barandas_plataformas', label: 'Barandas y Pisos Grating' },
+  { id: 'obras_civiles_pisos', label: 'Obras Civiles, Pisos y Canaletas' }
 ];
 
 const AREAS_PLANTA_SUGERIDAS = [

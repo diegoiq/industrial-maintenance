@@ -32,7 +32,14 @@ export type DisciplinaZona =
   | 'soportes'
   | 'canerias_proceso'
   | 'columnas_hormigon'
-  | 'barandas_plataformas';
+  | 'barandas_plataformas'
+  | 'equipos_proceso'
+  | 'tanques_silos'
+  | 'cerramientos_cubiertas'
+  | 'bandejas_electricas'
+  | 'puentes_grua_escaleras'
+  | 'obras_civiles_pisos'
+  | string;
 
 export type TipoHito = 
   | 'mojon_topografico'

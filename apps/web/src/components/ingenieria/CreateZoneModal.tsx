@@ -29,8 +29,14 @@ const DISCIPLINAS_DISPONIBLES: { id: DisciplinaZona; label: string }[] = [
   { id: 'parral_canerias', label: 'Parral de Cañerías (Pipe-Rack)' },
   { id: 'soportes', label: 'Soportes de Cañería y Silletas' },
   { id: 'canerias_proceso', label: 'Cañerías de Proceso / Vapor' },
+  { id: 'equipos_proceso', label: 'Equipos Rotativos / Proceso (Bombas/Agitadores)' },
+  { id: 'tanques_silos', label: 'Tanques, Silos y Recipientes' },
+  { id: 'cerramientos_cubiertas', label: 'Cerramientos, Chapas y Cubiertas' },
+  { id: 'bandejas_electricas', label: 'Bandejas Eléctricas e Instrumentación' },
+  { id: 'puentes_grua_escaleras', label: 'Puentes Grúa, Monorrieles y Escaleras' },
   { id: 'columnas_hormigon', label: 'Columnas y Pedestales de Hormigón' },
-  { id: 'barandas_plataformas', label: 'Barandas y Pisos Grating' }
+  { id: 'barandas_plataformas', label: 'Barandas y Pisos Grating' },
+  { id: 'obras_civiles_pisos', label: 'Obras Civiles, Pisos y Canaletas' }
 ];
 
 const AREAS_PLANTA_SUGERIDAS = [
@@ -94,6 +100,7 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
     'estructuras_acero',
     'parral_canerias'
   ]);
+  const [customDisciplina, setCustomDisciplina] = useState('');
   const [saludApriori, setSaludApriori] = useState<'bueno' | 'regular' | 'malo' | 'critico'>('regular');
   const [superficieEstimadaM2, setSuperficieEstimadaM2] = useState<number>(250);
 
@@ -291,6 +298,37 @@ export const CreateZoneModal: React.FC<CreateZoneModalProps> = ({
                 </label>
               ))}
             </div>
+            <div className="flex items-center space-x-2 pt-1">
+              <input
+                type="text"
+                placeholder="Otra disciplina (ej: Ductos / Chimenea / Tolva)..."
+                value={customDisciplina}
+                onChange={(e) => setCustomDisciplina(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-[11px] text-white"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const val = customDisciplina.trim();
+                  if (!val) return;
+                  if (!disciplinas.includes(val)) setDisciplinas(prev => [...prev, val]);
+                  setCustomDisciplina('');
+                }}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 font-bold rounded-lg text-[11px] border border-slate-700"
+              >
+                + Agregar
+              </button>
+            </div>
+            {disciplinas.filter(d => !DISCIPLINAS_DISPONIBLES.some(x => x.id === d)).length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {disciplinas.filter(d => !DISCIPLINAS_DISPONIBLES.some(x => x.id === d)).map(cd => (
+                  <span key={cd} className="px-2 py-0.5 bg-sky-950 text-sky-300 border border-sky-700 rounded text-[10px] flex items-center space-x-1">
+                    <span>{cd}</span>
+                    <button type="button" onClick={() => toggleDisciplina(cd)} className="text-red-400 font-bold ml-1">×</button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* 3. Estimación a Priori de Salud y Alcance */}
