@@ -31,7 +31,12 @@ import {
   Play,
   Square,
   LogOut,
-  HardDrive
+  HardDrive,
+  Sun,
+  Moon,
+  Mic,
+  MicOff,
+  Zap
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import {
@@ -151,6 +156,13 @@ export default function CampoPage() {
   const [soloZonasPendientes, setSoloZonasPendientes] = useState<boolean>(false);
   const [showProyeccionParams, setShowProyeccionParams] = useState<boolean>(false);
   const [historialFilter, setHistorialFilter] = useState<'todos' | 'pendiente' | 'sincronizado'>('todos');
+  const [sunlightMode, setSunlightMode] = useState<boolean>(false);
+  const [recoveredDraft, setRecoveredDraft] = useState<boolean>(false);
+  const [isDictating, setIsDictating] = useState<boolean>(false);
+  const recognitionRef = useRef<any>(null);
+  const fabCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const scaffoldingSectionRef = useRef<HTMLDivElement | null>(null);
+  const gallerySectionRef = useRef<HTMLDivElement | null>(null);
 
   const selectedZonaIdRef = useRef<string | null>(null);
   const selectedPlanoIdRef = useRef<string>('');
@@ -217,6 +229,10 @@ export default function CampoPage() {
   const [tipoAccesoCampo, setTipoAccesoCampo] = useState<'suelo' | 'escalera' | 'manlift' | 'andamio_tubular' | 'andamio_colgante'>('andamio_tubular');
   const [alturaAndamioCampo, setAlturaAndamioCampo] = useState<number>(6.5);
   const [volumenAndamioCampo, setVolumenAndamioCampo] = useState<number>(180.0);
+  const [scaffLargo, setScaffLargo] = useState<number>(6);
+  const [scaffAncho, setScaffAncho] = useState<number>(4);
+  const [scaffAlto, setScaffAlto] = useState<number>(6.5);
+  const [scaffVolMode, setScaffVolMode] = useState<'calculado' | 'manual'>('calculado');
 
   // Contador Temporal y Envejecimiento Estructural
   const [antiguedadAnios, setAntiguedadAnios] = useState<number>(10);
@@ -244,6 +260,8 @@ export default function CampoPage() {
   useEffect(() => {
     setCatalogMaterials(loadMaterialsCatalog());
     try {
+      const sunSaved = window.localStorage.getItem('im_campo_sunlight_mode');
+      if (sunSaved === '1') setSunlightMode(true);
       const saved = window.localStorage.getItem('im_user_profile');
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -364,14 +382,158 @@ export default function CampoPage() {
   }, {});
   const elementosDeZona = selectedZona ? elementos.filter(e => e.zona_id === selectedZona.id) : [];
 
-  // Seleccionar una Zona para iniciar el recorrido en campo
-  const handleSelectZonaForTour = (zona: ZonaInspeccion, allElems: Elemento[] = elementos, goToForm: boolean = false) => {
+  const toggleSunlightMode = () => {
+    setSunlightMode(prev => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('im_campo_sunlight_mode', next ? '1' : '0');
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  const saveCurrentDraftNow = async (zonaIdOverride?: string, customFotos?: FotoInspeccionLocal[]) => {
+    const zId = zonaIdOverride || selectedZona?.id;
+    if (!zId) return;
+    try {
+      await db.drafts.put({
+        zona_id: zId,
+        sustrato,
+        recubrimiento,
+        gradoCorrosion,
+        porcentajeAfectado,
+        requiereReemplazo,
+        observaciones,
+        requiereAndamioCampo,
+        tipoAccesoCampo,
+        alturaAndamioCampo,
+        volumenAndamioCampo,
+        scaffLargo,
+        scaffAncho,
+        scaffAlto,
+        fotos: customFotos ?? fotosGaleria,
+        updated_at: Date.now()
+      });
+    } catch {
+      // ignore IndexedDB draft errors
+    }
+  };
+
+  const handleDiscardDraft = async () => {
+    if (!selectedZona?.id) return;
+    await db.drafts.delete(selectedZona.id).catch(() => null);
+    setRecoveredDraft(false);
+    setObservaciones('');
+    setFotosGaleria([]);
+    setActivePhotoIndex(0);
+    setPorcentajeAfectado(20);
+    setGradoCorrosion('Ri 3');
+    setRequiereReemplazo(false);
+  };
+
+  useEffect(() => {
+    if (activeFieldTab !== 'relevamiento' || !selectedZona?.id) return;
+    const timer = setTimeout(() => {
+      void saveCurrentDraftNow(selectedZona.id);
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeFieldTab,
+    selectedZona?.id,
+    sustrato,
+    recubrimiento,
+    gradoCorrosion,
+    porcentajeAfectado,
+    requiereReemplazo,
+    observaciones,
+    requiereAndamioCampo,
+    tipoAccesoCampo,
+    alturaAndamioCampo,
+    volumenAndamioCampo,
+    scaffLargo,
+    scaffAncho,
+    scaffAlto,
+    fotosGaleria
+  ]);
+
+  const handleToggleDictation = () => {
+    if (typeof window === 'undefined') return;
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      alert('El dictado por voz no está disponible en este navegador. Podés usar los chips rápidos debajo.');
+      return;
+    }
+    if (isDictating && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsDictating(false);
+      return;
+    }
+    try {
+      const rec = new SpeechRec();
+      rec.lang = 'es-AR';
+      rec.continuous = true;
+      rec.interimResults = false;
+      rec.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            transcript += event.results[i][0].transcript + ' ';
+          }
+        }
+        if (transcript.trim()) {
+          setObservaciones(prev => (prev ? `${prev.trim()} ${transcript.trim()}` : transcript.trim()));
+        }
+      };
+      rec.onerror = () => setIsDictating(false);
+      rec.onend = () => setIsDictating(false);
+      recognitionRef.current = rec;
+      rec.start();
+      setIsDictating(true);
+    } catch {
+      setIsDictating(false);
+    }
+  };
+
+  // Seleccionar una Zona para iniciar el recorrido en campo (hidrata borrador previo si existe)
+  const handleSelectZonaForTour = async (zona: ZonaInspeccion, allElems: Elemento[] = elementos, goToForm: boolean = false) => {
+    if (selectedZona?.id && selectedZona.id !== zona.id && activeFieldTab === 'relevamiento') {
+      await saveCurrentDraftNow(selectedZona.id);
+    }
     setSelectedZona(zona);
-    if (zona.nivel_acceso_andamio) {
-      setRequiereAndamioCampo(zona.nivel_acceso_andamio.requiere_andamio !== false);
-      setTipoAccesoCampo(zona.nivel_acceso_andamio.tipo_acceso || 'andamio_tubular');
-      setAlturaAndamioCampo(zona.nivel_acceso_andamio.altura_mts || 6.5);
-      setVolumenAndamioCampo(zona.nivel_acceso_andamio.envolvente_m3 || 180);
+    const existingDraft = await db.drafts.get(zona.id).catch(() => undefined);
+    if (existingDraft) {
+      setSustrato(existingDraft.sustrato || 'acero_al_carbono');
+      setRecubrimiento(existingDraft.recubrimiento || 'epoxi_poliamida');
+      setGradoCorrosion(existingDraft.gradoCorrosion || 'Ri 3');
+      setPorcentajeAfectado(existingDraft.porcentajeAfectado ?? 20);
+      setRequiereReemplazo(Boolean(existingDraft.requiereReemplazo));
+      setObservaciones(existingDraft.observaciones || '');
+      setRequiereAndamioCampo(existingDraft.requiereAndamioCampo ?? true);
+      setTipoAccesoCampo((existingDraft.tipoAccesoCampo as any) || 'andamio_tubular');
+      setAlturaAndamioCampo(existingDraft.alturaAndamioCampo ?? 6.5);
+      setVolumenAndamioCampo(existingDraft.volumenAndamioCampo ?? 180);
+      if (existingDraft.scaffLargo) setScaffLargo(existingDraft.scaffLargo);
+      if (existingDraft.scaffAncho) setScaffAncho(existingDraft.scaffAncho);
+      if (existingDraft.scaffAlto) setScaffAlto(existingDraft.scaffAlto);
+      setFotosGaleria(existingDraft.fotos || []);
+      setActivePhotoIndex(0);
+      setRecoveredDraft(true);
+    } else {
+      setRecoveredDraft(false);
+      setFotosGaleria([]);
+      setActivePhotoIndex(0);
+      setObservaciones('');
+      if (zona.nivel_acceso_andamio) {
+        setRequiereAndamioCampo(zona.nivel_acceso_andamio.requiere_andamio !== false);
+        setTipoAccesoCampo(zona.nivel_acceso_andamio.tipo_acceso || 'andamio_tubular');
+        const h = zona.nivel_acceso_andamio.altura_mts || 6.5;
+        setAlturaAndamioCampo(h);
+        setScaffAlto(h);
+        setVolumenAndamioCampo(zona.nivel_acceso_andamio.envolvente_m3 || 180);
+      }
     }
     const prevZonaInsp = inspeccionesLocales.find(i => i.zona_id === zona.id || i.elemento_id === `ZONA:${zona.codigo}`);
     if (prevZonaInsp) {
@@ -618,6 +780,9 @@ export default function CampoPage() {
       setFotosGaleria(prev => {
         const combined = [...prev, ...nuevasFotos];
         setActivePhotoIndex(combined.length - 1);
+        if (selectedZona?.id) {
+          void saveCurrentDraftNow(selectedZona.id, combined);
+        }
         return combined;
       });
     } catch (err) {
@@ -779,6 +944,10 @@ export default function CampoPage() {
 
     // Guardar en Dexie y encolar subida en segundo plano sin bloquear la UI
     void syncManager.enqueueInspection(nuevaInspeccion);
+    if (selectedZona?.id) {
+      await db.drafts.delete(selectedZona.id).catch(() => null);
+      setRecoveredDraft(false);
+    }
 
     // Sincronizar zonas y elementos actualizados (sin reenviar la inspección para evitar doble subida a B2)
     if (typeof navigator !== 'undefined' && navigator.onLine) {
@@ -808,7 +977,50 @@ export default function CampoPage() {
   const activePhoto = fotosGaleria[activePhotoIndex];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col pb-20">
+    <div className={sunlightMode ? 'min-h-screen bg-[#F8FAFC] text-[#0F172A] flex flex-col pb-24 campo-sunlight' : 'min-h-screen bg-slate-950 text-white flex flex-col pb-24'}>
+      {sunlightMode && (
+        <style jsx global>{`
+          .campo-sunlight header,
+          .campo-sunlight nav {
+            background-color: #ffffff !important;
+            border-color: #cbd5e1 !important;
+            color: #0f172a !important;
+          }
+          .campo-sunlight .bg-slate-900,
+          .campo-sunlight .bg-slate-900\/95,
+          .campo-sunlight .bg-slate-900\/90,
+          .campo-sunlight .bg-slate-950,
+          .campo-sunlight .bg-slate-950\/95 {
+            background-color: #ffffff !important;
+            color: #0f172a !important;
+          }
+          .campo-sunlight .bg-slate-800 {
+            background-color: #f1f5f9 !important;
+            color: #0f172a !important;
+          }
+          .campo-sunlight .border-slate-800,
+          .campo-sunlight .border-slate-700 {
+            border-color: #cbd5e1 !important;
+          }
+          .campo-sunlight .text-white,
+          .campo-sunlight .text-slate-100,
+          .campo-sunlight .text-slate-200,
+          .campo-sunlight .text-slate-300 {
+            color: #0f172a !important;
+          }
+          .campo-sunlight .text-slate-400,
+          .campo-sunlight .text-slate-500 {
+            color: #475569 !important;
+          }
+          .campo-sunlight input,
+          .campo-sunlight select,
+          .campo-sunlight textarea {
+            background-color: #ffffff !important;
+            color: #0f172a !important;
+            border: 1.5px solid #94a3b8 !important;
+          }
+        `}</style>
+      )}
       {/* 1. Header con indicador de red y sync */}
       <SyncStatusBadge />
 
@@ -832,6 +1044,19 @@ export default function CampoPage() {
         </div>
 
         <div className="flex items-center space-x-1.5">
+          <button
+            type="button"
+            onClick={toggleSunlightMode}
+            title={sunlightMode ? 'Cambiar a Modo Oscuro' : 'Cambiar a Modo Luz Solar / Alto Contraste'}
+            className={`p-1.5 rounded-lg border transition ${
+              sunlightMode
+                ? 'bg-amber-100 border-amber-400 text-amber-800'
+                : 'bg-slate-950 hover:bg-slate-800 border-slate-700 text-amber-300'
+            }`}
+          >
+            {sunlightMode ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+          </button>
+
           <button
             type="button"
             onClick={() => setIsSyncComparatorOpen(true)}
@@ -1276,12 +1501,28 @@ export default function CampoPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setActiveFieldTab('zonas')}
+                onClick={async () => {
+                  await saveCurrentDraftNow();
+                  setActiveFieldTab('zonas');
+                }}
                 className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg font-bold flex-shrink-0"
               >
                 Cambiar
               </button>
             </div>
+
+            {recoveredDraft && (
+              <div className="bg-amber-950/60 border border-amber-500/60 rounded-xl px-3 py-2 flex items-center justify-between text-xs">
+                <span className="font-bold text-amber-200">📝 Borrador recuperado automáticamente</span>
+                <button
+                  type="button"
+                  onClick={handleDiscardDraft}
+                  className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded font-bold text-[11px]"
+                >
+                  Descartar
+                </button>
+              </div>
+            )}
 
             {/* Panel de la Zona Actualmente Seleccionada y Selector de Alcance */}
             {selectedZona && (
@@ -1310,10 +1551,14 @@ export default function CampoPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setIsAjustarZonaModalOpen(true)}
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold rounded-lg text-[11px]"
+                    onClick={() => scaffoldingSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                    className={`px-2.5 py-1 border font-bold rounded-lg text-[11px] transition ${
+                      requiereAndamioCampo
+                        ? 'bg-amber-500/20 border-amber-500/60 text-amber-300'
+                        : 'bg-slate-800 border-slate-700 text-slate-300'
+                    }`}
                   >
-                    ⚙️ Andamio Zona
+                    🪜 Andamio: {requiereAndamioCampo ? 'Sí' : 'No'}
                   </button>
                 </div>
               </div>
@@ -1503,14 +1748,31 @@ export default function CampoPage() {
                 );
                 if (!prevInsp) return null;
                 return (
-                  <div className="mt-2 p-2.5 rounded-lg bg-slate-900/90 border border-indigo-500/40 space-y-1">
-                    <div className="flex items-center justify-between text-[10px]">
+                  <div className="mt-2 p-2.5 rounded-lg bg-slate-900/90 border border-indigo-500/40 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] gap-2">
                       <span className="font-bold text-indigo-300 uppercase tracking-wider">
                         Última Inspección Previa ({new Date(prevInsp.fecha_inspeccion).toLocaleDateString()})
                       </span>
-                      <span className="font-mono font-bold text-amber-300">
-                        {prevInsp.grado_corrosion} · {prevInsp.porcentaje_afectado}%
-                      </span>
+                      <div className="flex items-center space-x-2">
+                        <span className="font-mono font-bold text-amber-300">
+                          {prevInsp.grado_corrosion} · {prevInsp.porcentaje_afectado}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (prevInsp.clasificacion_sustrato) setSustrato(prevInsp.clasificacion_sustrato);
+                            if (prevInsp.clasificacion_recubrimiento) setRecubrimiento(prevInsp.clasificacion_recubrimiento);
+                            if (prevInsp.grado_corrosion) setGradoCorrosion(prevInsp.grado_corrosion);
+                            if (typeof prevInsp.porcentaje_afectado === 'number') setPorcentajeAfectado(prevInsp.porcentaje_afectado);
+                            if (typeof prevInsp.requiere_reemplazo === 'boolean') setRequiereReemplazo(prevInsp.requiere_reemplazo);
+                            gallerySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          }}
+                          className="px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-bold flex items-center space-x-1"
+                        >
+                          <Zap className="w-3 h-3" />
+                          <span>Clonar</span>
+                        </button>
+                      </div>
                     </div>
                     {prevInsp.observaciones && (
                       <p className="text-[11px] text-slate-300 line-clamp-2">{prevInsp.observaciones}</p>
@@ -1529,7 +1791,7 @@ export default function CampoPage() {
         {/* PASO 2: GALERÍA MULTI-FOTO WEBP Y EVALUACIÓN TÉCNICA */}
         <form onSubmit={handleSaveInspection} className="space-y-4">
           {/* Galería Multi-Foto por Zona / Hallazgo */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <div ref={gallerySectionRef} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
             <div>
               <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-1.5">
                 <Camera className="w-4 h-4 text-amber-400" />
@@ -2188,7 +2450,21 @@ export default function CampoPage() {
             </div>
 
             <div>
-              <label className="text-xs text-slate-400 block mb-1">Observaciones Generales del Recorrido en Zona</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs text-slate-400 font-semibold">Observaciones Generales del Recorrido en Zona</label>
+                <button
+                  type="button"
+                  onClick={handleToggleDictation}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center space-x-1 border transition ${
+                    isDictating
+                      ? 'bg-red-600 text-white border-red-400 animate-pulse'
+                      : 'bg-slate-800 hover:bg-slate-700 text-sky-300 border-slate-700'
+                  }`}
+                >
+                  {isDictating ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                  <span>{isDictating ? 'Detener' : '🎙️ Dictar'}</span>
+                </button>
+              </div>
               <textarea
                 value={observaciones}
                 onChange={(e) => setObservaciones(e.target.value)}
@@ -2196,11 +2472,29 @@ export default function CampoPage() {
                 rows={2}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
               />
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {[
+                  'Requiere parada de planta',
+                  'Interferencia de cañerías',
+                  'Alta temperatura / vapor',
+                  'Acceso restringido / altura',
+                  'Humedad / fuga activa'
+                ].map(chip => (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => setObservaciones(prev => (prev ? `${prev.trim()} · ${chip}` : chip))}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[10px] font-semibold"
+                  >
+                    + {chip}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
           {/* Validación de Andamio y Acceso en Campo */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <div ref={scaffoldingSectionRef} id="scaffolding-section" className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
                 <HardHat className="w-4 h-4 text-amber-400" />
@@ -2218,38 +2512,101 @@ export default function CampoPage() {
             </div>
 
             {requiereAndamioCampo && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
-                <div>
-                  <label className="text-slate-400 block mb-1">Tipo de Acceso</label>
-                  <select
-                    value={tipoAccesoCampo}
-                    onChange={(e: any) => setTipoAccesoCampo(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs"
-                  >
-                    <option value="andamio_tubular">Andamio Tubular</option>
-                    <option value="andamio_colgante">Andamio Colgante</option>
-                    <option value="manlift">Manlift / Tijera</option>
-                    <option value="escalera">Escalera</option>
-                  </select>
+              <div className="space-y-3 text-xs pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-slate-400 block mb-1">Tipo de Acceso</label>
+                    <select
+                      value={tipoAccesoCampo}
+                      onChange={(e: any) => setTipoAccesoCampo(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs"
+                    >
+                      <option value="andamio_tubular">Andamio Tubular</option>
+                      <option value="andamio_colgante">Andamio Colgante</option>
+                      <option value="manlift">Manlift / Tijera</option>
+                      <option value="escalera">Escalera</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-slate-400">Volumen (m³)</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (scaffVolMode === 'manual') {
+                            setScaffVolMode('calculado');
+                            setVolumenAndamioCampo(Math.round(scaffLargo * scaffAncho * scaffAlto * 10) / 10);
+                          } else {
+                            setScaffVolMode('manual');
+                          }
+                        }}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                          scaffVolMode === 'calculado'
+                            ? 'bg-emerald-950/60 text-emerald-300 border-emerald-700/60'
+                            : 'bg-amber-950/60 text-amber-300 border-amber-700/60'
+                        }`}
+                      >
+                        {scaffVolMode === 'calculado' ? 'Calculado (L×A×H)' : 'Manual'}
+                      </button>
+                    </div>
+                    <input
+                      type="number"
+                      value={volumenAndamioCampo}
+                      onChange={(e) => {
+                        setScaffVolMode('manual');
+                        setVolumenAndamioCampo(parseFloat(e.target.value) || 0);
+                      }}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="text-slate-400 block mb-1">Altura (m)</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={alturaAndamioCampo}
-                    onChange={(e) => setAlturaAndamioCampo(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-slate-400 block mb-1">Volumen (m³)</label>
-                  <input
-                    type="number"
-                    value={volumenAndamioCampo}
-                    onChange={(e) => setVolumenAndamioCampo(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono"
-                  />
+
+                {/* Calculadora rápida L x A x H */}
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  {[
+                    { label: 'Largo (m)', val: scaffLargo, set: setScaffLargo, isAlto: false },
+                    { label: 'Ancho (m)', val: scaffAncho, set: setScaffAncho, isAlto: false },
+                    { label: 'Alto (m)', val: scaffAlto, set: setScaffAlto, isAlto: true }
+                  ].map(dim => (
+                    <div key={dim.label} className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-center">
+                      <span className="text-[10px] text-slate-400 block mb-1">{dim.label}</span>
+                      <div className="flex items-center justify-between gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = Math.max(0.5, Math.round((dim.val - 0.5) * 10) / 10);
+                            dim.set(next);
+                            if (dim.isAlto) setAlturaAndamioCampo(next);
+                            const L = dim.label.startsWith('Largo') ? next : scaffLargo;
+                            const A = dim.label.startsWith('Ancho') ? next : scaffAncho;
+                            const H = dim.label.startsWith('Alto') ? next : scaffAlto;
+                            setScaffVolMode('calculado');
+                            setVolumenAndamioCampo(Math.round(L * A * H * 10) / 10);
+                          }}
+                          className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 font-black text-sm"
+                        >
+                          -
+                        </button>
+                        <span className="font-mono font-bold text-xs">{dim.val}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = Math.round((dim.val + 0.5) * 10) / 10;
+                            dim.set(next);
+                            if (dim.isAlto) setAlturaAndamioCampo(next);
+                            const L = dim.label.startsWith('Largo') ? next : scaffLargo;
+                            const A = dim.label.startsWith('Ancho') ? next : scaffAncho;
+                            const H = dim.label.startsWith('Alto') ? next : scaffAlto;
+                            setScaffVolMode('calculado');
+                            setVolumenAndamioCampo(Math.round(L * A * H * 10) / 10);
+                          }}
+                          className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 font-black text-sm"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -2374,7 +2731,7 @@ export default function CampoPage() {
           <button
             type="button"
             onClick={() => setActiveFieldTab('historial')}
-            className={`py-2 px-2 rounded-xl font-bold flex items-center justify-center space-x-1.5 transition ${
+            className={`relative py-2 px-2 rounded-xl font-bold flex items-center justify-center space-x-1.5 transition ${
               activeFieldTab === 'historial'
                 ? 'bg-emerald-500 text-black shadow'
                 : 'text-slate-400 hover:text-white hover:bg-slate-900'
@@ -2382,9 +2739,40 @@ export default function CampoPage() {
           >
             <span>📋</span>
             <span>Historial ({inspeccionesLocales.length})</span>
+            {(() => {
+              const pendingCnt = inspeccionesLocales.filter(i => i.estado_sincronizacion !== 'sincronizado').length;
+              if (pendingCnt === 0) return null;
+              return (
+                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-amber-500 text-black text-[10px] font-black leading-none">
+                  {pendingCnt}
+                </span>
+              );
+            })()}
           </button>
         </div>
       </nav>
+
+      {/* Botón Flotante de Cámara (FAB) en Relevamiento */}
+      {activeFieldTab === 'relevamiento' && (
+        <>
+          <input
+            ref={fabCameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handleMultiPhotoUpload}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fabCameraInputRef.current?.click()}
+            title="Sacar foto rápida"
+            className="fixed bottom-20 right-4 z-40 w-13 h-13 p-3.5 rounded-full bg-amber-500 hover:bg-amber-400 text-black shadow-2xl border-2 border-amber-300 flex items-center justify-center active:scale-95 transition"
+          >
+            <Camera className="w-6 h-6" />
+          </button>
+        </>
+      )}
 
       {/* Modal de Escaneo QR */}
       <QRScannerModal

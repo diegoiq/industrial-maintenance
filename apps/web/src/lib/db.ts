@@ -12,6 +12,25 @@ export interface SyncQueueItem {
   created_at: number;
 }
 
+export interface CampoDraft {
+  zona_id: string;
+  sustrato: string;
+  recubrimiento: string;
+  gradoCorrosion: string;
+  porcentajeAfectado: number;
+  requiereReemplazo: boolean;
+  observaciones: string;
+  requiereAndamioCampo: boolean;
+  tipoAccesoCampo: string;
+  alturaAndamioCampo: number;
+  volumenAndamioCampo: number;
+  scaffLargo?: number;
+  scaffAncho?: number;
+  scaffAlto?: number;
+  fotos: any[];
+  updated_at: number;
+}
+
 export class IndustrialInspectionDB extends Dexie {
   areas!: Table<Area, string>;
   planos!: Table<Plano, string>;
@@ -21,6 +40,7 @@ export class IndustrialInspectionDB extends Dexie {
   sync_queue!: Table<SyncQueueItem, string>;
   parametros!: Table<ParametroCubicacion, string>;
   hitos!: Table<HitoGeografico, string>;
+  drafts!: Table<CampoDraft, string>;
 
   constructor() {
     super('IndustrialMaintenanceOfflineDB');
@@ -33,6 +53,9 @@ export class IndustrialInspectionDB extends Dexie {
       sync_queue: 'id, inspeccion_id, estado, proximo_reintento, intentos',
       parametros: 'id, clave, categoria',
       hitos: 'id, codigo, tipo, plano_id'
+    });
+    this.version(2).stores({
+      drafts: 'zona_id, updated_at'
     });
   }
 }
