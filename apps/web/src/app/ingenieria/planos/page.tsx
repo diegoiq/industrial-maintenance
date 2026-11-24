@@ -1110,6 +1110,7 @@ export default function PlanosIngenieriaPage() {
           currentPlano={currentPlano}
           hitos={hitosPlano}
           planos={planos}
+          inspecciones={inspecciones}
           onClose={() => {
             setSelectedZona(undefined);
             setSelectedElemento(undefined);

@@ -1268,7 +1268,7 @@ export default function CampoPage() {
                 </div>
 
                 {/* Lista de elementos de la zona o botón para agregar uno nuevo */}
-                <div className="flex items-center gap-2 pt-1">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1">
                   {elementosDeZona.length > 0 && (
                     <select
                       value={selectedElemento?.id || ''}
@@ -1279,7 +1279,7 @@ export default function CampoPage() {
                           setInspectionTargetMode('elemento');
                         }
                       }}
-                      className="flex-1 bg-slate-900 border border-slate-700 text-white font-mono text-xs rounded-lg p-2"
+                      className="w-full sm:flex-1 min-w-0 bg-slate-900 border border-slate-700 text-white font-mono text-xs rounded-lg p-2"
                     >
                       {elementosDeZona.map(el => (
                         <option key={el.id} value={el.id}>
@@ -1292,10 +1292,10 @@ export default function CampoPage() {
                   <button
                     type="button"
                     onClick={() => setIsFieldPinModalOpen(true)}
-                    className="px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-lg text-xs flex items-center space-x-1 shadow flex-shrink-0"
+                    className="w-full sm:w-auto px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-lg text-xs flex items-center justify-center space-x-1 shadow flex-shrink-0"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>+ Agregar Elemento / Hallazgo en {selectedZona.codigo}</span>
+                    <span className="truncate">+ Agregar Hallazgo en {selectedZona.codigo}</span>
                   </button>
                 </div>
 
@@ -2195,8 +2195,8 @@ export default function CampoPage() {
 
       {/* Modal Rápido para Agregar Elemento / Hallazgo dentro de la Zona Activa */}
       {isFieldPinModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-slate-900 border-2 border-sky-500 rounded-2xl overflow-hidden shadow-2xl p-5 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-sm overflow-y-auto">
+          <div className="w-full max-w-md bg-slate-900 border-2 border-sky-500 rounded-2xl overflow-y-auto max-h-[90vh] shadow-2xl p-5 space-y-4 text-xs my-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center space-x-2 text-white font-bold text-sm">
                 <MapPin className="w-5 h-5 text-sky-400" />

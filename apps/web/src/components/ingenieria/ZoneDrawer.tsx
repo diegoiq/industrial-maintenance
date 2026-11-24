@@ -15,9 +15,10 @@ import {
   Ruler,
   Globe,
   ExternalLink,
-  Check
+  Check,
+  Camera
 } from 'lucide-react';
-import { ZonaInspeccion, Elemento, EstadoSemaforo, Plano, HitoGeografico } from '../../types';
+import { ZonaInspeccion, Elemento, EstadoSemaforo, Plano, HitoGeografico, Inspeccion } from '../../types';
 import { 
   getOrInitGeoreferencia, 
   pixelToLatLng, 
@@ -32,6 +33,7 @@ interface ZoneDrawerProps {
   currentPlano?: Plano;
   hitos?: HitoGeografico[];
   planos?: Plano[];
+  inspecciones?: Inspeccion[];
   isEditingPolygon?: boolean;
   onClose: () => void;
   onOpenQRModal: (elemento: Elemento) => void;
@@ -53,6 +55,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
   currentPlano,
   hitos = [],
   planos = [],
+  inspecciones = [],
   isEditingPolygon = false,
   onClose,
   onOpenQRModal,
@@ -69,6 +72,7 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
   const [isEditingGps, setIsEditingGps] = useState(false);
   const [manualLat, setManualLat] = useState<string>('');
   const [manualLng, setManualLng] = useState<string>('');
+  const [zoomedPhotoUrl, setZoomedPhotoUrl] = useState<string | null>(null);
 
   useEffect(() => {
     setIsEditingGps(false);
@@ -540,7 +544,85 @@ export const ZoneDrawer: React.FC<ZoneDrawerProps> = ({
             </div>
           </div>
         )}
+
+        {/* Registro Fotográfico e Inspecciones de Campo */}
+        {(() => {
+          const inspRelacionadas = inspecciones.filter(i =>
+            elemento
+              ? i.elemento_id === elemento.id
+              : zona
+              ? (i.zona_id === zona.id || i.elemento_id === `ZONA:${zona.codigo}`)
+              : false
+          );
+          if (inspRelacionadas.length === 0) return null;
+          return (
+            <div className="pt-3 border-t border-slate-800 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider flex items-center space-x-1.5">
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>Fotos e Inspecciones ({inspRelacionadas.length})</span>
+                </span>
+              </div>
+              <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                {inspRelacionadas.map(insp => (
+                  <div key={insp.id} className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 space-y-2 text-[11px]">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono font-bold text-white">
+                        {insp.grado_corrosion} · {insp.porcentaje_afectado}%
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        {new Date(insp.fecha_inspeccion).toLocaleDateString()}
+                      </span>
+                    </div>
+                    {insp.observaciones && (
+                      <p className="text-slate-300 text-[11px] italic">&quot;{insp.observaciones}&quot;</p>
+                    )}
+                    {insp.fotos && insp.fotos.length > 0 && (
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {insp.fotos.map((f, fIdx) => {
+                          const src = f.storage_url || f.thumbnail_data_url;
+                          if (!src) return null;
+                          return (
+                            <button
+                              key={f.id || fIdx}
+                              type="button"
+                              onClick={() => setZoomedPhotoUrl(src)}
+                              className="group relative aspect-square rounded overflow-hidden border border-slate-700 hover:border-amber-400 bg-slate-900"
+                              title={f.comentario || 'Clic para ampliar foto'}
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={src} alt={`Foto ${fIdx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
+
+      {zoomedPhotoUrl && (
+        <div
+          onClick={() => setZoomedPhotoUrl(null)}
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+        >
+          <div className="relative max-w-4xl max-h-[90vh]">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={zoomedPhotoUrl} alt="Vista ampliada" className="max-w-full max-h-[85vh] rounded-xl border border-slate-700 shadow-2xl" />
+            <button
+              type="button"
+              onClick={() => setZoomedPhotoUrl(null)}
+              className="mt-2 mx-auto block px-4 py-1.5 bg-slate-800 text-white text-xs font-bold rounded-lg"
+            >
+              Cerrar vista
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Pie del Drawer */}
       <div className="pt-3 mt-3 border-t border-slate-800 text-[10px] text-slate-500 flex justify-between">
