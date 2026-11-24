@@ -145,6 +145,23 @@ export default function CampoPage() {
   const [selectedPlanoId, setSelectedPlanoId] = useState<string>('');
   const [selectedZona, setSelectedZona] = useState<ZonaInspeccion | null>(null);
   const [selectedElemento, setSelectedElemento] = useState<Elemento | null>(null);
+  const [isZoneLocked, setIsZoneLocked] = useState<boolean>(true);
+
+  const selectedZonaIdRef = useRef<string | null>(null);
+  const selectedPlanoIdRef = useRef<string>('');
+  const isZoneLockedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    selectedZonaIdRef.current = selectedZona?.id || null;
+  }, [selectedZona]);
+
+  useEffect(() => {
+    selectedPlanoIdRef.current = selectedPlanoId;
+  }, [selectedPlanoId]);
+
+  useEffect(() => {
+    isZoneLockedRef.current = isZoneLocked;
+  }, [isZoneLocked]);
 
   // Alcance dentro de la zona: 'zona_general' (relevamiento de la zona completa) o 'elemento' (activo/hallazgo puntual)
   const [inspectionTargetMode, setInspectionTargetMode] = useState<'zona_general' | 'elemento'>('zona_general');
@@ -264,7 +281,7 @@ export default function CampoPage() {
       setInspeccionesLocales(loadedInspecciones);
 
       const defaultPlano = loadedPlanos[0];
-      if (defaultPlano && !selectedPlanoId) {
+      if (defaultPlano && !selectedPlanoIdRef.current) {
         setSelectedPlanoId(defaultPlano.id);
         setSelectedAreaId(defaultPlano.area_id);
       } else if (loadedAreas.length > 0 && !selectedAreaId) {
@@ -272,8 +289,11 @@ export default function CampoPage() {
       }
 
       if (loadedZonas.length > 0) {
-        const stillExists = selectedZona && loadedZonas.some(z => z.id === selectedZona.id);
-        if (!stillExists) {
+        const currentZonaId = selectedZonaIdRef.current;
+        const freshSelected = currentZonaId ? loadedZonas.find(z => z.id === currentZonaId) : undefined;
+        if (freshSelected) {
+          setSelectedZona(freshSelected);
+        } else {
           handleSelectZonaForTour(loadedZonas[0], loadedElementos);
         }
       } else {
@@ -402,7 +422,7 @@ export default function CampoPage() {
       return [...prev, pointEntry];
     });
 
-    if (detectedZone && (!isFromWatch || selectedZona?.id !== detectedZone.id)) {
+    if (detectedZone && !isZoneLockedRef.current && (!isFromWatch || selectedZonaIdRef.current !== detectedZone.id)) {
       handleSelectZonaForTour(detectedZone);
       setSyncMessage(`📍 GPS ubicó al operario en Zona: ${detectedZone.codigo} (${detectedZone.nombre})`);
       setTimeout(() => setSyncMessage(''), 4500);
@@ -1173,18 +1193,34 @@ export default function CampoPage() {
             <div className="bg-slate-950 p-3 rounded-xl border border-sky-500/40 space-y-2.5 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <span className="text-[10px] font-mono text-sky-400 font-bold uppercase">ZONA ACTIVA EN RECORRIDO:</span>
+                  <span className="text-[10px] font-mono text-sky-400 font-bold uppercase">
+                    ZONA ACTIVA EN RECORRIDO {isZoneLocked ? '· 🔒 FIJADA' : '· 🔓 AUTO GPS'}:
+                  </span>
                   <h3 className="text-sm font-black text-white">
                     {selectedZona.codigo} — {selectedZona.nombre}
                   </h3>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsAjustarZonaModalOpen(true)}
-                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold rounded-lg text-[11px] flex-shrink-0"
-                >
-                  ⚙️ Andamio Zona
-                </button>
+                <div className="flex items-center space-x-1.5 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsZoneLocked(prev => !prev)}
+                    className={`px-2.5 py-1 border font-bold rounded-lg text-[11px] transition ${
+                      isZoneLocked
+                        ? 'bg-emerald-950/80 border-emerald-500/70 text-emerald-300'
+                        : 'bg-slate-800 border-slate-700 text-slate-300'
+                    }`}
+                    title={isZoneLocked ? 'Zona fijada: ni el GPS ni el polling cambiarán tu zona actual' : 'Modo automático: el GPS puede cambiar la zona al caminar'}
+                  >
+                    {isZoneLocked ? '🔒 Fijada' : '🔓 Libre'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAjustarZonaModalOpen(true)}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold rounded-lg text-[11px]"
+                  >
+                    ⚙️ Andamio Zona
+                  </button>
+                </div>
               </div>
 
               {/* ¿Qué desea relevar dentro de esta Zona? */}
