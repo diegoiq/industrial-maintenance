@@ -91,6 +91,7 @@ async function ensureExtendedSchema() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
       )
     `;
+    await sql`ALTER TABLE public.hitos_geograficos ADD COLUMN IF NOT EXISTS foto_url TEXT DEFAULT NULL`;
 
     await sql`
       CREATE TABLE IF NOT EXISTS public.parametros_cubicacion (
@@ -540,9 +541,25 @@ export async function POST(req: NextRequest) {
 
     for (const h of hitos) {
       if (!isValidEntityId(h.id)) continue;
+      let hitoFotoUrl = h.foto_url || null;
+      if (hitoFotoUrl && hitoFotoUrl.startsWith('data:')) {
+        try {
+          const validated = validateBase64DataUrl(hitoFotoUrl, ALLOWED_PHOTO_MIMES, MAX_PHOTO_UPLOAD_BYTES);
+          if (validated.valid) {
+            const key = `hitos/${h.id}/foto.webp`;
+            hitoFotoUrl = await uploadToB2(key, validated.buffer, validated.mimeType);
+            b2UploadsCount++;
+          } else {
+            hitoFotoUrl = null;
+          }
+        } catch (e) {
+          console.warn('Error subiendo foto de hito a B2:', e);
+        }
+      }
+
       await sql`
         INSERT INTO public.hitos_geograficos (
-          id, codigo, nombre, tipo, lat, lng, cota_snm, descripcion, plano_id, coordenadas_plano
+          id, codigo, nombre, tipo, lat, lng, cota_snm, descripcion, plano_id, coordenadas_plano, foto_url
         )
         VALUES (
           ${h.id},
@@ -554,7 +571,8 @@ export async function POST(req: NextRequest) {
           ${h.cota_snm || 146000},
           ${h.descripcion || null},
           ${h.plano_id || null},
-          ${h.coordenadas_plano ? JSON.stringify(h.coordenadas_plano) : null}
+          ${h.coordenadas_plano ? JSON.stringify(h.coordenadas_plano) : null},
+          ${hitoFotoUrl}
         )
         ON CONFLICT (id) DO UPDATE SET
           codigo = EXCLUDED.codigo,
@@ -564,7 +582,8 @@ export async function POST(req: NextRequest) {
           lng = EXCLUDED.lng,
           cota_snm = EXCLUDED.cota_snm,
           descripcion = EXCLUDED.descripcion,
-          coordenadas_plano = EXCLUDED.coordenadas_plano
+          coordenadas_plano = EXCLUDED.coordenadas_plano,
+          foto_url = COALESCE(EXCLUDED.foto_url, public.hitos_geograficos.foto_url)
       `;
     }
 

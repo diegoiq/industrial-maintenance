@@ -998,6 +998,17 @@ export default function PlanosIngenieriaPage() {
 
                 {contextMenu.type === 'hito' && (
                   <>
+                    {contextMenu.item.foto_url && (
+                      <a
+                        href={contextMenu.item.foto_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setContextMenu(null)}
+                        className="w-full px-3 py-2 text-left hover:bg-slate-800 flex items-center space-x-2 text-sky-300 font-semibold border-b border-slate-800"
+                      >
+                        <span>📷 Ver Foto Georreferenciada</span>
+                      </a>
+                    )}
                     <button
                       type="button"
                       onClick={() => {

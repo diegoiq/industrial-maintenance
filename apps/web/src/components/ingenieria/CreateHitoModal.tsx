@@ -9,10 +9,12 @@ import {
   Compass, 
   AlertCircle,
   Building2,
-  CheckCircle2
+  CheckCircle2,
+  Camera
 } from 'lucide-react';
 import { HitoGeografico, TipoHito, Plano } from '../../types';
 import { db } from '../../lib/db';
+import { compressInspectionPhoto } from '../../lib/imageCompression';
 
 interface CreateHitoModalProps {
   isOpen: boolean;
@@ -46,6 +48,8 @@ export const CreateHitoModal: React.FC<CreateHitoModalProps> = ({
   const [lng, setLng] = useState<number | ''>('');
   const [cotaSnm, setCotaSnm] = useState<number>(146000);
   const [descripcion, setDescripcion] = useState('');
+  const [fotoUrl, setFotoUrl] = useState<string>('');
+  const [isCompressingPhoto, setIsCompressingPhoto] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen || !coordinates) return null;
@@ -101,6 +105,7 @@ export const CreateHitoModal: React.FC<CreateHitoModalProps> = ({
           x: coordinates.x,
           y: coordinates.y
         },
+        foto_url: fotoUrl || undefined,
         created_at: new Date().toISOString()
       };
 
@@ -115,6 +120,7 @@ export const CreateHitoModal: React.FC<CreateHitoModalProps> = ({
       setLat('');
       setLng('');
       setDescripcion('');
+      setFotoUrl('');
       setErrorMessage(null);
     } catch (err: any) {
       console.error(err);
@@ -262,6 +268,48 @@ export const CreateHitoModal: React.FC<CreateHitoModalProps> = ({
               onChange={(e) => setDescripcion(e.target.value)}
               className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white focus:outline-none resize-none"
             />
+          </div>
+
+          {/* Foto Georreferenciada del Hito */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-emerald-400 flex items-center space-x-1.5">
+                <Camera className="w-3.5 h-3.5" />
+                <span>Foto Georreferenciada del Hito (Opcional)</span>
+              </span>
+              <label className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-bold cursor-pointer border border-slate-700">
+                {isCompressingPhoto ? 'Comprimiendo...' : fotoUrl ? 'Cambiar Foto' : '+ Subir / Tomar Foto'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setIsCompressingPhoto(true);
+                    try {
+                      const compressed = await compressInspectionPhoto(file);
+                      setFotoUrl(compressed.thumbnailDataUrl);
+                    } finally {
+                      setIsCompressingPhoto(false);
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            {fotoUrl && (
+              <div className="flex items-center space-x-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={fotoUrl} alt="Vista previa hito" className="w-16 h-16 object-cover rounded-lg border border-emerald-500/50" />
+                <div className="text-[10px] font-mono text-slate-400 space-y-0.5">
+                  <span className="text-emerald-300 block">✓ Vinculada a GPS {lat || '?'}, {lng || '?'}</span>
+                  <button type="button" onClick={() => setFotoUrl('')} className="text-red-400 underline">
+                    Quitar foto
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Botones */}

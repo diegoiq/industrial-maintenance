@@ -14,10 +14,12 @@ import {
   Layers, 
   Building2, 
   AlertCircle,
-  Navigation
+  Navigation,
+  Camera
 } from 'lucide-react';
 import { HitoGeografico, TipoHito, Plano } from '../../types';
 import { db } from '../../lib/db';
+import { compressInspectionPhoto } from '../../lib/imageCompression';
 
 interface HitosMapsModalProps {
   isOpen: boolean;
@@ -54,6 +56,8 @@ export const HitosMapsModal: React.FC<HitosMapsModalProps> = ({
   const [cotaSnm, setCotaSnm] = useState<number>(146000);
   const [descripcion, setDescripcion] = useState('');
   const [vincularPlano, setVincularPlano] = useState(true);
+  const [fotoUrl, setFotoUrl] = useState('');
+  const [isCompressingPhoto, setIsCompressingPhoto] = useState(false);
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -129,6 +133,7 @@ export const HitosMapsModal: React.FC<HitosMapsModalProps> = ({
         cota_snm: cotaSnm,
         descripcion: descripcion.trim() || undefined,
         plano_id: vincularPlano && currentPlano ? currentPlano.id : undefined,
+        foto_url: fotoUrl || undefined,
         created_at: new Date().toISOString()
       };
 
@@ -146,6 +151,7 @@ export const HitosMapsModal: React.FC<HitosMapsModalProps> = ({
       setLat('');
       setLng('');
       setDescripcion('');
+      setFotoUrl('');
       setActiveTab('lista');
     } catch (err: any) {
       console.error(err);
@@ -371,6 +377,45 @@ export const HitosMapsModal: React.FC<HitosMapsModalProps> = ({
                 />
               </div>
 
+              {/* Foto Georreferenciada del Hito */}
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-emerald-400 flex items-center space-x-1.5">
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Foto Georreferenciada del Hito (Opcional)</span>
+                  </span>
+                  <label className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-bold cursor-pointer border border-slate-700">
+                    {isCompressingPhoto ? 'Comprimiendo...' : fotoUrl ? 'Cambiar Foto' : '+ Subir / Tomar Foto'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setIsCompressingPhoto(true);
+                        try {
+                          const compressed = await compressInspectionPhoto(file);
+                          setFotoUrl(compressed.thumbnailDataUrl);
+                        } finally {
+                          setIsCompressingPhoto(false);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+                {fotoUrl && (
+                  <div className="flex items-center space-x-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={fotoUrl} alt="Vista previa hito" className="w-16 h-16 object-cover rounded-lg border border-emerald-500/50" />
+                    <button type="button" onClick={() => setFotoUrl('')} className="text-[11px] text-red-400 underline">
+                      Quitar foto
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {/* Botón Guardar */}
               <div className="flex justify-end space-x-3 pt-3 border-t border-slate-800">
                 <button
@@ -445,6 +490,18 @@ export const HitosMapsModal: React.FC<HitosMapsModalProps> = ({
                         </div>
 
                         <div className="flex items-center space-x-2 flex-shrink-0 self-end sm:self-center">
+                          {h.foto_url && (
+                            <a
+                              href={h.foto_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="w-10 h-10 rounded-lg overflow-hidden border border-emerald-500/50 block flex-shrink-0"
+                              title="Ver foto georreferenciada"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={h.foto_url} alt={h.codigo} className="w-full h-full object-cover" />
+                            </a>
+                          )}
                           <a
                             href={`https://www.google.com/maps?q=${h.lat},${h.lng}`}
                             target="_blank"

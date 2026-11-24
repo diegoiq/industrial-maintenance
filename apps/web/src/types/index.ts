@@ -60,6 +60,7 @@ export interface HitoGeografico {
   descripcion?: string;
   plano_id?: string;
   coordenadas_plano?: { x: number; y: number };
+  foto_url?: string;
   created_at: string;
 }
 

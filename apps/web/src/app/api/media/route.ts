@@ -3,7 +3,7 @@ import { getSignedB2Url } from '@/lib/b2';
 
 export const dynamic = 'force-dynamic';
 
-const SAFE_B2_KEY_REGEX = /^(planos|inspecciones)\/[a-zA-Z0-9_:-]+(?:\/[a-zA-Z0-9_.-]+)?\.[a-z0-9]+$/;
+const SAFE_B2_KEY_REGEX = /^(planos|inspecciones|hitos)\/[a-zA-Z0-9_:-]+(?:\/[a-zA-Z0-9_.-]+)?\.[a-z0-9]+$/;
 
 export async function GET(req: NextRequest) {
   const key = req.nextUrl.searchParams.get('key');
