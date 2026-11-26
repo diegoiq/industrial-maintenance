@@ -181,19 +181,26 @@ class OfflineSyncManager {
     try {
       const fotos = Array.isArray(inspeccion.fotos) ? inspeccion.fotos : [];
 
-      // Fase A: Guardar primero el registro liviano en Neon sin los dataUrl pesados
-      const skeletonFotos = fotos.map(f => ({
-        ...f,
-        thumbnail_data_url: f.storage_url ? (f.micro_thumbnail_data_url || '') : (f.micro_thumbnail_data_url || '')
-      }));
+      // Fase A: Guardar primero el registro liviano en Neon sin los dataUrl pesados (idempotente: omitir si ya tiene remote_id)
+      if (!inspeccion.remote_id) {
+        const skeletonFotos = fotos.map(f => ({
+          ...f,
+          thumbnail_data_url: f.storage_url ? (f.micro_thumbnail_data_url || '') : (f.micro_thumbnail_data_url || '')
+        }));
 
-      await fetch('/api/sync-neon', {
-        method: 'POST',
-        headers: getSyncRequestHeaders(),
-        body: JSON.stringify({
-          inspecciones: [{ ...inspeccion, fotos: skeletonFotos }]
-        })
-      }).catch(() => null);
+        const resA = await fetch('/api/sync-neon', {
+          method: 'POST',
+          headers: getSyncRequestHeaders(),
+          body: JSON.stringify({
+            inspecciones: [{ ...inspeccion, fotos: skeletonFotos }]
+          })
+        }).catch(() => null);
+
+        if (resA && resA.ok) {
+          inspeccion.remote_id = inspeccion.id;
+          await db.inspecciones.update(inspeccion.id, { remote_id: inspeccion.id }).catch(() => null);
+        }
+      }
 
       // Fase B: Subir fotos a Backblaze B2 en cola con máximo 2 en paralelo
       const resolvedUrls: (string | undefined)[] = fotos.map(f => f.storage_url);

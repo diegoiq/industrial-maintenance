@@ -35,9 +35,9 @@ export async function middleware(req: NextRequest) {
   }
 
   // Control de Acceso Basado en Roles (RBAC):
-  // Un usuario con PIN exclusivo de 'inspector' solo opera en /campo y no puede acceder a Ingeniería ni borrar maestros
+  // Un usuario con PIN exclusivo de 'inspector' solo opera en /campo y no puede acceder a Ingeniería ni Contratación
   if (session.rol === 'inspector') {
-    if (pathname.startsWith('/ingenieria')) {
+    if (pathname.startsWith('/ingenieria') || pathname.startsWith('/contratacion')) {
       const campoUrl = req.nextUrl.clone();
       campoUrl.pathname = '/campo';
       campoUrl.search = '';
@@ -53,7 +53,11 @@ export const config = {
     '/',
     '/campo/:path*',
     '/ingenieria/:path*',
+    '/contratacion/:path*',
     '/api/sync-neon/:path*',
+    '/api/catalogo/:path*',
+    '/api/tarifario/:path*',
+    '/api/inspections/:path*',
     '/api/media/:path*',
     '/api/ai/:path*'
   ]

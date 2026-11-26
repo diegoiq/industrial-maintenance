@@ -1,3 +1,13 @@
+import type {
+  EstrategiaIntervencion,
+  GradoPreparacion,
+  ClasificacionAlcance,
+  AccesoZonaItem,
+  EstadoBOM,
+  ItemMetalicoBOM,
+  ItemCivilComputo
+} from './computo';
+
 export type RolUsuario = 'admin' | 'ingeniero' | 'inspector' | 'consulta';
 
 export type EstadoSemaforo = 'gris' | 'verde' | 'amarillo' | 'naranja' | 'rojo';
@@ -229,6 +239,17 @@ export interface Inspeccion {
   validado_por_ingeniero_id?: string;
   fecha_validacion?: string;
   reintentos_sync?: number;
+  // Fase 5: Cómputo Métrico, BOM Editable y Paquete de Contratación
+  remote_id?: string;
+  estrategia_intervencion?: EstrategiaIntervencion;
+  grado_preparacion?: GradoPreparacion;
+  clasificacion_alcance?: ClasificacionAlcance;
+  superficie_computada_m2?: number;
+  accesos?: AccesoZonaItem[];
+  estado_bom?: EstadoBOM;
+  nota_bom_campo?: string;
+  items_metalicos?: ItemMetalicoBOM[];
+  items_civil?: ItemCivilComputo[];
 }
 
 export interface ParametroCubicacion {

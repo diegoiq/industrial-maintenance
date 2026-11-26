@@ -68,6 +68,15 @@ async function ensureExtendedSchema() {
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS ultimo_revestimiento_anios INT DEFAULT NULL`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS tasa_avance_anual_pct NUMERIC(6, 2) DEFAULT NULL`;
     await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS meses_ventana_intervencion INT DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS estrategia_intervencion VARCHAR(32) DEFAULT 'INTEGRAL_100'`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS grado_preparacion VARCHAR(32) DEFAULT 'ST2_ST3'`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS clasificacion_alcance VARCHAR(20) DEFAULT 'CRITICO'`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS superficie_computada_m2 NUMERIC(10, 2) DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS accesos_json JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS estado_bom VARCHAR(32) DEFAULT 'NO_APLICA'`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS nota_bom_campo TEXT DEFAULT NULL`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS items_metalicos_json JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE public.inspecciones ADD COLUMN IF NOT EXISTS items_civil_json JSONB DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE public.elementos ALTER COLUMN tipo_elemento TYPE VARCHAR(80) USING tipo_elemento::text`;
     await sql`ALTER TABLE public.inspecciones ALTER COLUMN elemento_id DROP NOT NULL`;
     await sql`ALTER TABLE public.inspecciones DROP CONSTRAINT IF EXISTS inspecciones_elemento_id_fkey`;
@@ -204,6 +213,10 @@ export async function GET(req: NextRequest) {
       ...row,
       porcentaje_afectado: row.porcentaje_afectado !== null && row.porcentaje_afectado !== undefined ? Number(row.porcentaje_afectado) : 0,
       tasa_avance_anual_pct: row.tasa_avance_anual_pct !== null && row.tasa_avance_anual_pct !== undefined ? Number(row.tasa_avance_anual_pct) : undefined,
+      superficie_computada_m2: row.superficie_computada_m2 !== null && row.superficie_computada_m2 !== undefined ? Number(row.superficie_computada_m2) : undefined,
+      accesos: Array.isArray(row.accesos_json) ? row.accesos_json : [],
+      items_metalicos: Array.isArray(row.items_metalicos_json) ? row.items_metalicos_json : [],
+      items_civil: Array.isArray(row.items_civil_json) ? row.items_civil_json : [],
       fotos: Array.isArray(row.fotos_json) ? row.fotos_json : []
     }));
 
@@ -634,7 +647,10 @@ export async function POST(req: NextRequest) {
           criticidad_calculada, antiguedad_anios, ultimo_revestimiento_anios,
           tasa_avance_anual_pct, meses_ventana_intervencion,
           observaciones, diagnostico_ia, fotos_json,
-          coordenadas_gps, historial_recorrido_gps, evaluacion_civil, muestreo_tramo
+          coordenadas_gps, historial_recorrido_gps, evaluacion_civil, muestreo_tramo,
+          estrategia_intervencion, grado_preparacion, clasificacion_alcance,
+          superficie_computada_m2, accesos_json, estado_bom, nota_bom_campo,
+          items_metalicos_json, items_civil_json
         )
         VALUES (
           ${insp.id},
@@ -661,7 +677,16 @@ export async function POST(req: NextRequest) {
           ${insp.coordenadas_gps ? JSON.stringify(insp.coordenadas_gps) : null},
           ${insp.historial_recorrido_gps ? JSON.stringify(insp.historial_recorrido_gps) : '[]'},
           ${insp.evaluacion_civil ? JSON.stringify(insp.evaluacion_civil) : null},
-          ${insp.muestreo_tramo ? JSON.stringify(insp.muestreo_tramo) : null}
+          ${insp.muestreo_tramo ? JSON.stringify(insp.muestreo_tramo) : null},
+          ${insp.estrategia_intervencion || 'INTEGRAL_100'},
+          ${insp.grado_preparacion || 'ST2_ST3'},
+          ${insp.clasificacion_alcance || 'CRITICO'},
+          ${insp.superficie_computada_m2 ?? null},
+          ${JSON.stringify(insp.accesos || [])},
+          ${insp.estado_bom || 'NO_APLICA'},
+          ${insp.nota_bom_campo || null},
+          ${JSON.stringify(insp.items_metalicos || [])},
+          ${JSON.stringify(insp.items_civil || [])}
         )
         ON CONFLICT (id) DO UPDATE SET
           estado_sincronizacion = 'sincronizado',
@@ -684,7 +709,16 @@ export async function POST(req: NextRequest) {
           coordenadas_gps = COALESCE(EXCLUDED.coordenadas_gps, public.inspecciones.coordenadas_gps),
           historial_recorrido_gps = COALESCE(EXCLUDED.historial_recorrido_gps, public.inspecciones.historial_recorrido_gps),
           evaluacion_civil = COALESCE(EXCLUDED.evaluacion_civil, public.inspecciones.evaluacion_civil),
-          muestreo_tramo = COALESCE(EXCLUDED.muestreo_tramo, public.inspecciones.muestreo_tramo)
+          muestreo_tramo = COALESCE(EXCLUDED.muestreo_tramo, public.inspecciones.muestreo_tramo),
+          estrategia_intervencion = COALESCE(EXCLUDED.estrategia_intervencion, public.inspecciones.estrategia_intervencion),
+          grado_preparacion = COALESCE(EXCLUDED.grado_preparacion, public.inspecciones.grado_preparacion),
+          clasificacion_alcance = COALESCE(EXCLUDED.clasificacion_alcance, public.inspecciones.clasificacion_alcance),
+          superficie_computada_m2 = COALESCE(EXCLUDED.superficie_computada_m2, public.inspecciones.superficie_computada_m2),
+          accesos_json = COALESCE(EXCLUDED.accesos_json, public.inspecciones.accesos_json),
+          estado_bom = COALESCE(EXCLUDED.estado_bom, public.inspecciones.estado_bom),
+          nota_bom_campo = COALESCE(EXCLUDED.nota_bom_campo, public.inspecciones.nota_bom_campo),
+          items_metalicos_json = COALESCE(EXCLUDED.items_metalicos_json, public.inspecciones.items_metalicos_json),
+          items_civil_json = COALESCE(EXCLUDED.items_civil_json, public.inspecciones.items_civil_json)
       `;
     }
 

@@ -1,5 +1,16 @@
 import Dexie, { Table } from 'dexie';
 import { Area, Plano, ZonaInspeccion, Elemento, Inspeccion, ParametroCubicacion, HitoGeografico } from '../types';
+import {
+  AccesoZonaItem,
+  CatalogoMaterialItem,
+  ClasificacionAlcance,
+  EstadoBOM,
+  EstrategiaIntervencion,
+  GradoPreparacion,
+  ItemCivilComputo,
+  ItemMetalicoBOM
+} from '../types/computo';
+import { DEFAULT_CATALOG_SEED } from './defaultCatalogSeed';
 
 export interface SyncQueueItem {
   id: string; // uuid
@@ -28,6 +39,15 @@ export interface CampoDraft {
   scaffAncho?: number;
   scaffAlto?: number;
   fotos: any[];
+  // Fase 5
+  estrategia_intervencion?: EstrategiaIntervencion;
+  grado_preparacion?: GradoPreparacion;
+  clasificacion_alcance?: ClasificacionAlcance;
+  accesos?: AccesoZonaItem[];
+  estado_bom?: EstadoBOM;
+  nota_bom_campo?: string;
+  items_metalicos?: ItemMetalicoBOM[];
+  items_civil?: ItemCivilComputo[];
   updated_at: number;
 }
 
@@ -41,6 +61,7 @@ export class IndustrialInspectionDB extends Dexie {
   parametros!: Table<ParametroCubicacion, string>;
   hitos!: Table<HitoGeografico, string>;
   drafts!: Table<CampoDraft, string>;
+  catalogo_materiales!: Table<CatalogoMaterialItem, string>;
 
   constructor() {
     super('IndustrialMaintenanceOfflineDB');
@@ -57,7 +78,23 @@ export class IndustrialInspectionDB extends Dexie {
     this.version(2).stores({
       drafts: 'zona_id, updated_at'
     });
+    this.version(3).stores({
+      catalogo_materiales: 'codigo, categoria, activo'
+    });
   }
 }
 
 export const db = new IndustrialInspectionDB();
+
+export async function ensureLocalCatalogSeeded(): Promise<CatalogoMaterialItem[]> {
+  try {
+    const count = await db.catalogo_materiales.count();
+    if (count === 0) {
+      await db.catalogo_materiales.bulkPut(DEFAULT_CATALOG_SEED);
+      return DEFAULT_CATALOG_SEED;
+    }
+    return await db.catalogo_materiales.toArray();
+  } catch {
+    return DEFAULT_CATALOG_SEED;
+  }
+}

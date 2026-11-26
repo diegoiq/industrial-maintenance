@@ -1,14 +1,18 @@
 'use client';
 
-import React, { useState } from 'react';
-import { X, Camera, Mic, MicOff, Plus, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Camera, Mic, MicOff, Plus, CheckCircle2, MapPin, ChevronDown, ChevronUp } from 'lucide-react';
 import { compressInspectionPhoto } from '../../lib/imageCompression';
 import { FotoInspeccionLocal, TipoElemento } from '../../types';
+import { CatalogoMaterialItem, EstadoBOM, ItemMetalicoBOM } from '../../types/computo';
+import { ensureLocalCatalogSeeded } from '../../lib/db';
+import { MetalicoBOMEditor } from './MetalicoBOMEditor';
 
 interface HallazgoExpressDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   zonaCodigo: string;
+  onLocatePin?: () => void;
   onSaveExpress: (data: {
     tagCodigo: string;
     tipoElemento: TipoElemento;
@@ -16,6 +20,9 @@ interface HallazgoExpressDrawerProps {
     requiereReemplazo: boolean;
     observaciones: string;
     fotos: FotoInspeccionLocal[];
+    estadoBom?: EstadoBOM;
+    notaBomCampo?: string;
+    itemsMetalicos?: ItemMetalicoBOM[];
   }) => Promise<void>;
 }
 
@@ -33,6 +40,7 @@ export function HallazgoExpressDrawer({
   isOpen,
   onClose,
   zonaCodigo,
+  onLocatePin,
   onSaveExpress
 }: HallazgoExpressDrawerProps) {
   const [tipo, setTipo] = useState<TipoElemento>('viga_acero');
@@ -40,11 +48,21 @@ export function HallazgoExpressDrawer({
   const [grado, setGrado] = useState('Ri 3');
   const [reemplazo, setReemplazo] = useState(false);
   const [nota, setNota] = useState('');
+  const [notaBom, setNotaBom] = useState('');
+  const [itemsMetalicos, setItemsMetalicos] = useState<ItemMetalicoBOM[]>([]);
+  const [showBomEditor, setShowBomEditor] = useState(false);
+  const [catalogo, setCatalogo] = useState<CatalogoMaterialItem[]>([]);
   const [fotos, setFotos] = useState<FotoInspeccionLocal[]>([]);
   const [isCompressing, setIsCompressing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && catalogo.length === 0) {
+      ensureLocalCatalogSeeded().then(setCatalogo).catch(() => null);
+    }
+  }, [isOpen, catalogo.length]);
 
   if (!isOpen) return null;
 
@@ -96,6 +114,9 @@ export function HallazgoExpressDrawer({
     setTagCustom('');
     setReemplazo(false);
     setNota('');
+    setNotaBom('');
+    setItemsMetalicos([]);
+    setShowBomEditor(false);
     setFotos([]);
   };
 
@@ -104,13 +125,21 @@ export function HallazgoExpressDrawer({
     try {
       const prefix = QUICK_ELEMENT_TYPES.find(t => t.value === tipo)?.label.replace('+ ', '').toUpperCase().slice(0, 4) || 'HALL';
       const generatedTag = tagCustom.trim() || `${zonaCodigo}-${prefix}-${String(Date.now()).slice(-3)}`;
+      const estadoBom: EstadoBOM = !reemplazo
+        ? 'NO_APLICA'
+        : itemsMetalicos.length > 0
+        ? 'COMPLETO'
+        : 'PENDIENTE_REVISION';
       await onSaveExpress({
         tagCodigo: generatedTag.toUpperCase(),
         tipoElemento: tipo,
         gradoCorrosion: grado,
         requiereReemplazo: reemplazo,
         observaciones: nota,
-        fotos
+        fotos,
+        estadoBom,
+        notaBomCampo: notaBom.trim() || undefined,
+        itemsMetalicos
       });
       resetForm();
       if (addAnother) {
@@ -217,6 +246,52 @@ export function HallazgoExpressDrawer({
               <div className={`w-5 h-5 rounded-full bg-white transition-transform ${reemplazo ? 'translate-x-5' : 'translate-x-0'}`} />
             </div>
           </button>
+
+          {reemplazo && (
+            <div className="bg-slate-950 border border-amber-500/40 rounded-xl p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-amber-300">
+                  {itemsMetalicos.length > 0 ? '🟢 BOM con borrador cargado' : '🟡 BOM Pendiente de Revisión en PC'}
+                </span>
+              </div>
+              <input
+                type="text"
+                value={notaBom}
+                onChange={(e) => setNotaBom(e.target.value)}
+                placeholder="Nota rápida para Ingeniería / BOM (ej: Cambiar 2 ménsulas ~1.5 m)..."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+              />
+              <button
+                type="button"
+                onClick={() => setShowBomEditor((prev) => !prev)}
+                className="w-full flex items-center justify-between text-[11px] font-bold text-sky-300 py-1"
+              >
+                <span>+ Cargar borrador de perfiles ahora (Opcional)</span>
+                {showBomEditor ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
+              {showBomEditor && (
+                <MetalicoBOMEditor
+                  items={itemsMetalicos}
+                  catalogo={catalogo}
+                  onChange={setItemsMetalicos}
+                />
+              )}
+            </div>
+          )}
+
+          {onLocatePin && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onLocatePin();
+              }}
+              className="w-full py-2 px-3 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 text-[11px] font-semibold flex items-center justify-center space-x-1.5"
+            >
+              <MapPin className="w-3.5 h-3.5 text-sky-400" />
+              <span>📍 Ubicar Pin en Plano (Opcional)</span>
+            </button>
+          )}
         </div>
 
         {/* Paso 4: Nota rápida / dictado */}

@@ -19,7 +19,8 @@ import {
   ChevronLeft,
   ChevronRight,
   LogOut,
-  User
+  User,
+  ClipboardCheck
 } from 'lucide-react';
 
 export default function IngenieriaLayout({
@@ -95,6 +96,12 @@ export default function IngenieriaLayout({
       href: '/ingenieria/presupuestos',
       icon: FileSpreadsheet,
       description: 'Plan plurianual y exportación ERP'
+    },
+    {
+      name: 'Contratación y BoQ',
+      href: '/contratacion',
+      icon: ClipboardCheck,
+      description: 'BOM editable, Catálogo y Pliego'
     },
     {
       name: 'Diagnóstico IA (Gemini)',
